@@ -23,7 +23,6 @@ class VentaSerializer(
             "iva",
             "total",
             "estado",
-            "fecha_creacion",
         ]
 
         read_only_fields = [
@@ -34,8 +33,8 @@ class VentaSerializer(
             "metodo_pago",
             "fecha",
             "subtotal",
+            "descuento",
             "iva",
             "total",
             "estado",
-            "fecha_creacion",
         ]

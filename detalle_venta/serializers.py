@@ -9,8 +9,22 @@ class DetalleVentaSerializer(serializers.ModelSerializer):
 
         model = DetalleVenta
 
-        fields = "__all__"
-
-        read_only_fields = (
+        fields = [
             "id",
-        )
+            "venta",
+            "variante",
+            "cantidad",
+            "precio_unitario",
+            "descuento",
+            "subtotal",
+        ]
+
+        read_only_fields = [
+            "id",
+            "venta",
+            "variante",
+            "cantidad",
+            "precio_unitario",
+            "descuento",
+            "subtotal",
+        ]

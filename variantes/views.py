@@ -1,12 +1,12 @@
-from django.db import transaction, IntegrityError
+import uuid
+
+from django.db import IntegrityError
 from django.db.models import F
 
 from rest_framework import (
     viewsets,
     status
 )
-
-import uuid
 
 from rest_framework.response import Response
 
@@ -20,13 +20,21 @@ from rest_framework.pagination import PageNumberPagination
 
 from .models import Variante
 from .serializers import VarianteSerializer
+from .services import (
+    crear_variante,
+    actualizar_variante,
+    activar_variante,
+    desactivar_variante,
+)
 
 from usuarios.permissions import IsAdmin
 
-from bitacora.services import registrar_bitacora
+from config.exceptions import BusinessException
 
 
-class VariantePagination(PageNumberPagination):
+class VariantePagination(
+    PageNumberPagination
+):
 
     page_size = 50
 
@@ -39,8 +47,13 @@ class VarianteViewSet(
     viewsets.ModelViewSet
 ):
 
-    queryset = Variante.objects.filter(
-        activo=True
+    queryset = (
+        Variante.objects
+        .filter(activo=True)
+        .select_related(
+            "producto",
+            "producto__categoria"
+        )
     )
 
     serializer_class = VarianteSerializer
@@ -48,8 +61,7 @@ class VarianteViewSet(
     pagination_class = VariantePagination
 
     # ----------------------------------------------------------
-    # SIN DELETE: el ciclo de vida se maneja con
-    # activar/desactivar, no con el método HTTP DELETE.
+    # SIN DELETE
     # ----------------------------------------------------------
 
     http_method_names = [
@@ -60,7 +72,6 @@ class VarianteViewSet(
         "head",
         "options"
     ]
-
 
     # ==========================================================
     # QUERYSET
@@ -73,23 +84,26 @@ class VarianteViewSet(
         es_admin = (
             user
             and user.is_authenticated
+            and getattr(user, "activo", False)
             and user.rol in (0, 1)
         )
-        
-        producto_id = self.request.query_params.get(
-            "producto"
+
+        producto_id = (
+            self.request.query_params.get(
+                "producto"
             )
+        )
 
         if producto_id:
+
             try:
                 uuid.UUID(producto_id)
+
             except ValueError:
                 return Variante.objects.none()
 
         # ------------------------------------------------------
-        # PARA MODIFICAR, ACTIVAR O DESACTIVAR
-        # (necesita poder encontrar variantes inactivas para
-        # reactivarlas)
+        # OPERACIONES QUE NECESITAN ENCONTRAR INACTIVAS
         # ------------------------------------------------------
 
         if self.action in [
@@ -99,49 +113,67 @@ class VarianteViewSet(
             "desactivar"
         ]:
 
-            return Variante.objects.all()
+            queryset = Variante.objects.all()
+
+            if producto_id:
+                queryset = queryset.filter(
+                    producto_id=producto_id
+                )
+
+            return queryset.select_related(
+                "producto",
+                "producto__categoria"
+            )
 
         # ------------------------------------------------------
-        # CONSULTAR DETALLE — ADMIN/SUPERADMIN
-        # ------------------------------------------------------
-        # Un admin debe poder abrir el detalle de una variante
-        # inactiva (GET /variantes/{id}/), no solo activarla/
-        # desactivarla a ciegas.
+        # DETALLE ADMIN
         # ------------------------------------------------------
 
-        if self.action == "retrieve" and es_admin:
+        if (
+            self.action == "retrieve"
+            and es_admin
+        ):
 
-            return Variante.objects.all()
+            return (
+                Variante.objects
+                .all()
+                .select_related(
+                    "producto",
+                    "producto__categoria"
+                )
+            )
 
         # ------------------------------------------------------
-        # LISTADO — ADMIN/SUPERADMIN
-        # ------------------------------------------------------
-        # Por defecto sigue mostrando solo activas, pero un
-        # admin puede pedir explícitamente las inactivas o
-        # todas con ?activo=.
+        # LISTADO ADMIN
         # ------------------------------------------------------
 
-        if self.action == "list" and es_admin:
+        if (
+            self.action == "list"
+            and es_admin
+        ):
 
-            activo_param = self.request.query_params.get(
-                "activo"
+            activo_param = (
+                self.request.query_params.get(
+                    "activo"
+                )
             )
 
             if activo_param is not None:
 
                 if activo_param.lower() == "todos":
 
-                    queryset = Variante.objects.all()
+                    queryset = (
+                        Variante.objects.all()
+                    )
 
                 else:
 
-                    queryset = Variante.objects.filter(
-                        activo=activo_param.lower() in (
-                            "true",
-                            "1"
+                    queryset = (
+                        Variante.objects.filter(
+                            activo=activo_param.lower()
+                            in ("true", "1")
                         )
                     )
-
 
                 if producto_id:
 
@@ -149,52 +181,50 @@ class VarianteViewSet(
                         producto_id=producto_id
                     )
 
-                return queryset.order_by(
-                    "nombre",
-                    "id"
+                return (
+                    queryset
+                    .select_related(
+                        "producto",
+                        "producto__categoria"
+                    )
+                    .order_by(
+                        "nombre",
+                        "id"
+                    )
                 )
 
         # ------------------------------------------------------
-        # CONSULTAS NORMALES
-        # (empleados, o admin sin filtro)
+        # CONSULTA NORMAL
         # ------------------------------------------------------
 
-        queryset = Variante.objects.filter(
-            activo=True
+        queryset = (
+            Variante.objects
+            .filter(activo=True)
         )
 
-        if self.action == "list":
+        if producto_id:
 
-            producto_id = self.request.query_params.get(
-                "producto"
+            queryset = queryset.filter(
+                producto_id=producto_id
             )
 
-            if producto_id:
-
-                queryset = queryset.filter(
-                    producto_id=producto_id
-                )
-
-        return queryset.order_by(
-            "nombre",
-            "id"
+        return (
+            queryset
+            .select_related(
+                "producto",
+                "producto__categoria"
+            )
+            .order_by(
+                "nombre",
+                "id"
+            )
         )
-
 
     # ==========================================================
     # PERMISOS
     # ==========================================================
 
     def get_permissions(self):
-
-        # ------------------------------------------------------
-        # CONSULTAS
-        # Todos los usuarios autenticados pueden consultar:
-        # - listado
-        # - detalle
-        # - búsqueda por código
-        # - alertas de stock
-        # ------------------------------------------------------
 
         if self.action in [
             "list",
@@ -207,20 +237,13 @@ class VarianteViewSet(
                 IsAuthenticated()
             ]
 
-        # ------------------------------------------------------
-        # OPERACIONES ADMINISTRATIVAS
-        # Crear, modificar, activar y desactivar variantes
-        # requieren administrador.
-        # ------------------------------------------------------
-
         return [
             IsAuthenticated(),
             IsAdmin()
         ]
 
-
     # ==========================================================
-    # CREAR VARIANTE
+    # CREAR
     # ==========================================================
 
     def create(
@@ -237,118 +260,151 @@ class VarianteViewSet(
         if not serializer.is_valid():
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
                         "No se pudo registrar "
                         "la variante."
                     ),
-
                     "data": serializer.errors
                 },
-
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
 
-            with transaction.atomic():
+            variante = crear_variante(
+                validated_data=(
+                    serializer.validated_data
+                ),
+                usuario=request.user
+            )
 
-                variante = serializer.save()
+        except BusinessException as exc:
 
-                registrar_bitacora(
-
-                    usuario=request.user,
-
-                    modulo="Variantes",
-
-                    accion="CREAR_VARIANTE",
-
-                    descripcion=(
-
-                        f"Variante '{variante.nombre}' "
-                        f"del producto "
-                        f"'{variante.producto.nombre}' "
-                        f"creada correctamente por "
-                        f"{request.user.nombre} "
-                        f"{request.user.apellido}."
-                    )
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         except IntegrityError:
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
                         "Ya existe una variante con "
                         "este SKU o código de barras."
                     ),
-
                     "data": None
                 },
-
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_409_CONFLICT
             )
 
-        return Response(
+        serializer.instance = variante
 
+        return Response(
             {
                 "success": True,
-
                 "message": (
                     "Variante registrada "
                     "correctamente."
                 ),
-
-                "data": VarianteSerializer(
-                    variante
-                ).data
+                "data": serializer.data
             },
-
             status=status.HTTP_201_CREATED
         )
 
-
     # ==========================================================
-    # MODIFICAR VARIANTE
-    # ==========================================================
-    # El estado 'activo' no puede cambiar aquí.
-    # Se administra mediante activar/desactivar.
+    # MODIFICAR
     # ==========================================================
 
-    def perform_update(
+    def update(
         self,
-        serializer
+        request,
+        *args,
+        **kwargs
     ):
 
-        with transaction.atomic():
+        partial = kwargs.pop(
+            "partial",
+            False
+        )
 
-            variante = serializer.save()
+        instancia = self.get_object()
 
-            registrar_bitacora(
+        serializer = self.get_serializer(
+            instancia,
+            data=request.data,
+            partial=partial
+        )
 
-                usuario=self.request.user,
+        if not serializer.is_valid():
 
-                modulo="Variantes",
-
-                accion="MODIFICAR_VARIANTE",
-
-                descripcion=(
-
-                    f"Variante '{variante.nombre}' "
-                    f"del producto "
-                    f"'{variante.producto.nombre}' "
-                    f"modificada correctamente por "
-                    f"{self.request.user.nombre} "
-                    f"{self.request.user.apellido}."
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "No se pudo modificar "
+                        "la variante."
+                    ),
+                    "data": serializer.errors
+                },
+                status=status.HTTP_400_BAD_REQUEST
             )
 
+        try:
+
+            variante = actualizar_variante(
+                instancia=instancia,
+                validated_data=(
+                    serializer.validated_data
+                ),
+                usuario=request.user
+            )
+
+        except BusinessException as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except IntegrityError:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "Ya existe una variante con "
+                        "este SKU o código de barras."
+                    ),
+                    "data": None
+                },
+                status=status.HTTP_409_CONFLICT
+            )
+
+        serializer.instance = variante
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    "Variante modificada "
+                    "correctamente."
+                ),
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
 
     # ==========================================================
     # ALERTAS DE STOCK
@@ -370,7 +426,9 @@ class VarianteViewSet(
                 activo=True,
                 stock__lte=F("stock_minimo")
             )
-            .select_related("producto")
+            .select_related(
+                "producto"
+            )
             .order_by(
                 "stock",
                 "producto__nombre",
@@ -382,67 +440,50 @@ class VarianteViewSet(
 
         for variante in variantes:
 
-            if variante.stock == 0:
-
-                estado = "AGOTADO"
-
-            else:
-
-                estado = "BAJO"
-
-            data.append({
-
-                "id": str(variante.id),
-
-                "producto": (
-                    variante.producto.nombre
-                ),
-
-                "variante": (
-                    variante.nombre
-                ),
-
-                "codigo_barras": (
-                    variante.codigo_barras
-                ),
-
-                "sku": (
-                    variante.sku
-                ),
-
-                "stock": (
-                    variante.stock
-                ),
-
-                "stock_minimo": (
-                    variante.stock_minimo
-                ),
-
-                "estado": estado,
-
-            })
+            data.append(
+                {
+                    "id": str(variante.id),
+                    "producto": (
+                        variante.producto.nombre
+                    ),
+                    "variante": (
+                        variante.nombre
+                    ),
+                    "codigo_barras": (
+                        variante.codigo_barras
+                    ),
+                    "sku": (
+                        variante.sku
+                    ),
+                    "stock": (
+                        variante.stock
+                    ),
+                    "stock_minimo": (
+                        variante.stock_minimo
+                    ),
+                    "estado": (
+                        "AGOTADO"
+                        if variante.stock == 0
+                        else "BAJO"
+                    ),
+                }
+            )
 
         return Response(
-
             {
                 "success": True,
-
                 "message": (
                     "Alertas de stock obtenidas "
                     "correctamente."
                 ),
-
                 "data": data,
-
                 "total": len(data),
             },
-
             status=status.HTTP_200_OK
         )
 
-
     # ==========================================================
-    # ACTIVAR VARIANTE
+    # ACTIVAR
     # ==========================================================
 
     @action(
@@ -456,106 +497,54 @@ class VarianteViewSet(
         pk=None
     ):
 
-        variante = self.get_object()
+        try:
 
-        if variante.activo:
+            variante = activar_variante(
+                variante_id=pk,
+                usuario=request.user
+            )
+
+        except Variante.DoesNotExist:
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
-                        "La variante ya está activa."
+                        "No existe la variante "
+                        "solicitada."
                     ),
-
                     "data": None
                 },
-
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_404_NOT_FOUND
             )
 
-        if not variante.producto.activo:
+        except BusinessException as exc:
 
             return Response(
-
                 {
                     "success": False,
-
-                    "message": (
-                        "No se puede activar la variante "
-                        "porque su producto está inactivo."
-                    ),
-
+                    "message": str(exc),
                     "data": None
                 },
-
                 status=status.HTTP_400_BAD_REQUEST
-            )
-        if not variante.producto.categoria.activo:
-            return Response(
-                {
-                   "success": False,
-                   "message": (
-                       "No se puede activar la variante"
-                       "porque la categoría de su producto está inactiva"
-                   ),
-                   "data": None 
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        with transaction.atomic():
-
-            variante.activo = True
-
-            variante.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
-                usuario=request.user,
-
-                modulo="Variantes",
-
-                accion="ACTIVAR_VARIANTE",
-
-                descripcion=(
-
-                    f"Variante '{variante.nombre}' "
-                    f"del producto "
-                    f"'{variante.producto.nombre}' "
-                    f"activada correctamente por "
-                    f"{request.user.nombre} "
-                    f"{request.user.apellido}."
-                )
             )
 
         return Response(
-
             {
                 "success": True,
-
                 "message": (
                     "Variante activada "
                     "correctamente."
                 ),
-
                 "data": VarianteSerializer(
                     variante
                 ).data
             },
-
             status=status.HTTP_200_OK
         )
 
-
     # ==========================================================
-    # DESACTIVAR VARIANTE
+    # DESACTIVAR
     # ==========================================================
 
     @action(
@@ -569,74 +558,52 @@ class VarianteViewSet(
         pk=None
     ):
 
-        variante = self.get_object()
+        try:
 
-        if not variante.activo:
+            variante = desactivar_variante(
+                variante_id=pk,
+                usuario=request.user
+            )
+
+        except Variante.DoesNotExist:
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
-                        "La variante ya está inactiva."
+                        "No existe la variante "
+                        "solicitada."
                     ),
-
                     "data": None
                 },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
+        except BusinessException as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        with transaction.atomic():
-
-            variante.activo = False
-
-            variante.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
-                usuario=request.user,
-
-                modulo="Variantes",
-
-                accion="DESACTIVAR_VARIANTE",
-
-                descripcion=(
-
-                    f"Variante '{variante.nombre}' "
-                    f"del producto "
-                    f"'{variante.producto.nombre}' "
-                    f"desactivada correctamente por "
-                    f"{request.user.nombre} "
-                    f"{request.user.apellido}."
-                )
-            )
-
         return Response(
-
             {
                 "success": True,
-
                 "message": (
                     "Variante desactivada "
                     "correctamente."
                 ),
-
                 "data": None
             },
-
             status=status.HTTP_200_OK
         )
 
-
     # ==========================================================
-    # BUSCAR VARIANTE POR CÓDIGO DE BARRAS
+    # BUSCAR POR CÓDIGO DE BARRAS
     # ==========================================================
 
     @action(
@@ -650,49 +617,44 @@ class VarianteViewSet(
         codigo=None
     ):
 
-        try:
-
-            variante = Variante.objects.get(
-
+        variante = (
+            Variante.objects
+            .filter(
                 codigo_barras=codigo,
-
                 activo=True
-
             )
-
-            serializer = self.get_serializer(
-                variante
+            .select_related(
+                "producto",
+                "producto__categoria"
             )
+            .first()
+        )
+
+        if variante is None:
 
             return Response(
-
-                {
-                    "success": True,
-
-                    "message": (
-                        "Variante encontrada."
-                    ),
-
-                    "data": serializer.data
-                },
-
-                status=status.HTTP_200_OK
-            )
-
-        except Variante.DoesNotExist:
-
-            return Response(
-
                 {
                     "success": False,
-
                     "message": (
                         "No existe una variante "
                         "con ese código."
                     ),
-
                     "data": None
                 },
-
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        serializer = self.get_serializer(
+            variante
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    "Variante encontrada."
+                ),
+                "data": serializer.data
+            },
+            status=status.HTTP_200_OK
+        )

@@ -13,137 +13,320 @@ from .models import Venta
 from .serializers import VentaSerializer
 from .services import crear_venta, cancelar_venta
 
-from detalle_venta.models import DetalleVenta
 from devoluciones.models import DetalleDevolucion
 from garantias.models import Garantia
 
 from config.exceptions import BusinessException
 
+
 logger = logging.getLogger(__name__)
 
 
+# ==============================================================
+# PAGINACIÓN
+# ==============================================================
+
 class VentaPagination(PageNumberPagination):
+
     page_size = 50
     page_size_query_param = "page_size"
     max_page_size = 200
 
 
+# ==============================================================
+# VALIDAR USUARIO ACTIVO
+# ==============================================================
+
 def _usuario_activo(user):
+
     if not user.activo:
         return Response(
-            {"success": False, "message": "El usuario está inactivo.", "data": None},
+            {
+                "success": False,
+                "message": "El usuario está inactivo.",
+                "data": None,
+            },
             status=status.HTTP_403_FORBIDDEN,
         )
+
     return None
 
 
-def _ejecutar_servicio(fn, log_msg):
+# ==============================================================
+# EJECUTAR SERVICIO
+# ==============================================================
+
+def _ejecutar_servicio(
+    fn,
+    log_msg,
+):
+
     try:
+
         return fn(), None
+
     except BusinessException as e:
+
         return None, Response(
-            {"success": False, "message": str(e), "data": getattr(e, "data", None)},
+            {
+                "success": False,
+                "message": str(e),
+                "data": getattr(
+                    e,
+                    "data",
+                    None,
+                ),
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
+
     except Exception:
-        logger.exception(log_msg)
+
+        logger.exception(
+            log_msg
+        )
+
         return None, Response(
-            {"success": False, "message": "Error interno del servidor.", "data": None},
+            {
+                "success": False,
+                "message": "Error interno del servidor.",
+                "data": None,
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
 
-def _construir_mapas(detalle_ids):
+# ==============================================================
+# CONSTRUIR MAPAS DE DEVOLUCIONES Y GARANTÍAS
+# ==============================================================
+
+def _construir_mapas(
+    detalle_ids,
+):
+
     devueltas_map = {
         str(r["detalle_venta_id"]): r["total"]
         for r in (
             DetalleDevolucion.objects
             .filter(
                 detalle_venta_id__in=detalle_ids,
-                devolucion__estado__in=["PENDIENTE", "APROBADA"],
+                devolucion__estado__in=[
+                    "PENDIENTE",
+                    "APROBADA",
+                ],
             )
-            .values("detalle_venta_id")
-            .annotate(total=Coalesce(Sum("cantidad"), Value(0, output_field=IntegerField())))
+            .values(
+                "detalle_venta_id"
+            )
+            .annotate(
+                total=Coalesce(
+                    Sum("cantidad"),
+                    Value(
+                        0,
+                        output_field=IntegerField(),
+                    ),
+                )
+            )
         )
     }
+
     garantias_map = {
         str(r["detalle_venta_id"]): r["total"]
         for r in (
             Garantia.objects
             .filter(
                 detalle_venta_id__in=detalle_ids,
-                estado__in=["PENDIENTE", "APROBADA"],
+                estado__in=[
+                    "PENDIENTE",
+                    "APROBADA",
+                ],
             )
-            .values("detalle_venta_id")
-            .annotate(total=Coalesce(Sum("cantidad"), Value(0, output_field=IntegerField())))
+            .values(
+                "detalle_venta_id"
+            )
+            .annotate(
+                total=Coalesce(
+                    Sum("cantidad"),
+                    Value(
+                        0,
+                        output_field=IntegerField(),
+                    ),
+                )
+            )
         )
     }
-    return devueltas_map, garantias_map
+
+    return (
+        devueltas_map,
+        garantias_map,
+    )
 
 
-def _serializar_detalle(d, devueltas_map, garantias_map):
+# ==============================================================
+# SERIALIZAR DETALLE
+# ==============================================================
+
+def _serializar_detalle(
+    detalle,
+    devueltas_map,
+    garantias_map,
+):
+
+    cantidad_devuelta = (
+        devueltas_map.get(
+            str(detalle.id),
+            0,
+        )
+    )
+
+    cantidad_garantia = (
+        garantias_map.get(
+            str(detalle.id),
+            0,
+        )
+    )
+
+    cantidad_disponible = max(
+        detalle.cantidad
+        - cantidad_devuelta
+        - cantidad_garantia,
+        0,
+    )
+
     return {
-        "detalle_id": d.id,
-        "producto": d.variante.producto.nombre,
-        "variante": d.variante.nombre,
-        "variante_id": d.variante.id,
-        "cantidad": d.cantidad,
-        "cantidad_disponible": max(
-            d.cantidad - devueltas_map.get(str(d.id), 0) - garantias_map.get(str(d.id), 0), 0
+        "detalle_id": detalle.id,
+        "producto": (
+            detalle.variante
+            .producto
+            .nombre
         ),
-        "precio_unitario": d.precio_unitario,
-        "descuento": d.descuento,
-        "subtotal": d.subtotal,
+        "variante": (
+            detalle.variante
+            .nombre
+        ),
+        "variante_id": (
+            detalle.variante
+            .id
+        ),
+        "cantidad": (
+            detalle.cantidad
+        ),
+        "cantidad_disponible": (
+            cantidad_disponible
+        ),
+        "precio_unitario": (
+            detalle.precio_unitario
+        ),
+        "descuento": (
+            detalle.descuento
+        ),
+        "subtotal": (
+            detalle.subtotal
+        ),
     }
 
 
-def _serializar_venta(v):
+# ==============================================================
+# SERIALIZAR VENTA
+# ==============================================================
+
+def _serializar_venta(
+    venta,
+):
+
     return {
-        "id": v.id,
-        "folio": v.folio,
-        "fecha": v.fecha,
-        "usuario": v.usuario.nombre,
-        "metodo_pago": v.metodo_pago.nombre,
-        "caja": v.corte_caja.caja.nombre,
-        "subtotal": v.subtotal,
-        "descuento": v.descuento,
-        "iva": v.iva,
-        "total": v.total,
-        "estado": v.estado,
+        "id": venta.id,
+        "folio": venta.folio,
+        "fecha": venta.fecha,
+        "usuario": venta.usuario.nombre,
+        "metodo_pago": (
+            venta.metodo_pago.nombre
+        ),
+        "caja": (
+            venta.corte_caja
+            .caja
+            .nombre
+        ),
+        "subtotal": venta.subtotal,
+        "descuento": venta.descuento,
+        "iva": venta.iva,
+        "total": venta.total,
+        "estado": venta.estado,
     }
 
 
-class VentaViewSet(viewsets.ModelViewSet):
+# ==============================================================
+# VIEWSET DE VENTAS
+# ==============================================================
+
+class VentaViewSet(
+    viewsets.ModelViewSet
+):
 
     queryset = Venta.objects.all()
+
     serializer_class = VentaSerializer
-    http_method_names = ["get", "post", "head", "options"]
+
+    http_method_names = [
+        "get",
+        "post",
+        "head",
+        "options",
+    ]
+
     pagination_class = VentaPagination
 
+    # ==========================================================
+    # PERMISOS
+    # ==========================================================
+
     def get_permissions(self):
-        return [IsAuthenticated()]
+
+        return [
+            IsAuthenticated()
+        ]
 
     # ==========================================================
     # CREAR VENTA
     # ==========================================================
 
-    def create(self, request, *args, **kwargs):
-        error = _usuario_activo(request.user)
+    def create(
+        self,
+        request,
+        *args,
+        **kwargs,
+    ):
+
+        error = _usuario_activo(
+            request.user
+        )
+
         if error:
             return error
 
-        venta, err = _ejecutar_servicio(
-            lambda: crear_venta(request.data, request.user),
-            "Error inesperado en crear_venta",
+        venta, err = (
+            _ejecutar_servicio(
+                lambda: crear_venta(
+                    request.data,
+                    request.user,
+                ),
+                "Error inesperado en crear_venta",
+            )
         )
+
         if err:
             return err
+
         return Response(
             {
                 "success": True,
-                "folio": venta.folio,
-                "venta_id": venta.id,
-                "message": "Venta registrada correctamente.",
+                "message": (
+                    "Venta registrada correctamente."
+                ),
+                "data": {
+                    "id": venta.id,
+                    "folio": venta.folio,
+                },
             },
             status=status.HTTP_201_CREATED,
         )
@@ -152,28 +335,36 @@ class VentaViewSet(viewsets.ModelViewSet):
     # LISTAR VENTAS
     # ==========================================================
 
-    def list(self, request, *args, **kwargs):
-        if request.user.rol in (0, 1):
-            ventas = ( Venta.objects.select_related(
+    def list(
+        self,
+        request,
+        *args,
+        **kwargs,
+    ):
+
+        ventas = (
+            Venta.objects
+            .select_related(
                 "usuario",
                 "metodo_pago",
                 "corte_caja",
-                "corte_caja__caja"
-                ).all()
+                "corte_caja__caja",
             )
-        else:
-            ventas = (
-                Venta.objects.select_related(
-                    "usuario",
-                    "metodo_pago",
-                    "corte_caja",
-                    "corte_caja__caja"
-                ).filter(
-                    usuario=request.user
-                )
-            )    
-        
-       
+        )
+
+        # ------------------------------------------------------
+        # EMPLEADO:
+        # únicamente sus propias ventas.
+        #
+        # ADMIN / SUPERADMIN:
+        # pueden consultar todas.
+        # ------------------------------------------------------
+
+        if request.user.rol not in (0, 1):
+
+            ventas = ventas.filter(
+                usuario=request.user
+            )
 
         paginator = VentaPagination()
 
@@ -182,57 +373,143 @@ class VentaViewSet(viewsets.ModelViewSet):
             request,
         )
 
-        return paginator.get_paginated_response(
+        resultados = [
+            _serializar_venta(
+                venta
+            )
+            for venta in pagina
+        ]
+
+        # ------------------------------------------------------
+        # RESPUESTA ESTANDARIZADA
+        # ------------------------------------------------------
+
+        return Response(
             {
                 "success": True,
-                "data": [_serializar_venta(v) for v in pagina],
-            }
+                "message": (
+                    "Ventas consultadas correctamente."
+                ),
+                "data": {
+                    "count": (
+                        paginator
+                        .page
+                        .paginator
+                        .count
+                    ),
+                    "next": (
+                        paginator
+                        .get_next_link()
+                    ),
+                    "previous": (
+                        paginator
+                        .get_previous_link()
+                    ),
+                    "results": resultados,
+                },
+            },
+            status=status.HTTP_200_OK,
         )
 
     # ==========================================================
     # CONSULTAR VENTA
-    # ==========================================================
+    # ==============================================================
 
-    def retrieve(self, request, pk=None):
-        
-        queryset = (Venta.objects.select_related(
-            "usuario",
-            "metodo_pago",
-            "corte_caja",
-            "corte_caja__caja"
-        ).prefetch_related(
-            "detalles__variante__producto"
+    def retrieve(
+        self,
+        request,
+        pk=None,
+    ):
+
+        queryset = (
+            Venta.objects
+            .select_related(
+                "usuario",
+                "metodo_pago",
+                "corte_caja",
+                "corte_caja__caja",
+            )
+            .prefetch_related(
+                "detalles__variante__producto",
+            )
         )
-        
-        )
-        
-        
+
         try:
-            if request.user.rol in (0,1):
+
+            if request.user.rol in (0, 1):
+
                 venta = queryset.get(
                     pk=pk,
                 )
+
             else:
+
                 venta = queryset.get(
                     pk=pk,
-                    usuario=request.user
+                    usuario=request.user,
                 )
-        except (Venta.DoesNotExist, ValueError, TypeError):
+
+        except (
+            Venta.DoesNotExist,
+            ValueError,
+            TypeError,
+        ):
+
             return Response(
                 {
                     "success": False,
-                    "message": "La venta no existe.",
-                    "data": None
+                    "message": (
+                        "La venta no existe."
+                    ),
+                    "data": None,
                 },
-                status=status.HTTP_404_NOT_FOUND, 
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        detalle_ids = [d.id for d in venta.detalles.all()]
-        devueltas_map, garantias_map = _construir_mapas(detalle_ids)
-        productos = [_serializar_detalle(d, devueltas_map, garantias_map) for d in venta.detalles.all()]
+        # ------------------------------------------------------
+        # DETALLES
+        # ------------------------------------------------------
+
+        detalles = list(
+            venta.detalles.all()
+        )
+
+        detalle_ids = [
+            detalle.id
+            for detalle in detalles
+        ]
+
+        (
+            devueltas_map,
+            garantias_map,
+        ) = _construir_mapas(
+            detalle_ids
+        )
+
+        productos = [
+            _serializar_detalle(
+                detalle,
+                devueltas_map,
+                garantias_map,
+            )
+            for detalle in detalles
+        ]
+
+        data = {
+            **_serializar_venta(
+                venta
+            ),
+            "productos": productos,
+        }
 
         return Response(
-            {"success": True, "data": {**_serializar_venta(venta), "productos": productos}},
+            {
+                "success": True,
+                "message": (
+                    "Venta consultada correctamente."
+                ),
+                "data": data,
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -240,19 +517,44 @@ class VentaViewSet(viewsets.ModelViewSet):
     # CANCELAR VENTA
     # ==========================================================
 
-    @action(detail=True, methods=["post"], url_path="cancelar")
-    def cancelar(self, request, pk=None):
-        error = _usuario_activo(request.user)
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="cancelar",
+    )
+    def cancelar(
+        self,
+        request,
+        pk=None,
+    ):
+
+        error = _usuario_activo(
+            request.user
+        )
+
         if error:
             return error
 
-        _, err = _ejecutar_servicio(
-            lambda: cancelar_venta(pk, request.user),
-            "Error inesperado en cancelar_venta",
+        _, err = (
+            _ejecutar_servicio(
+                lambda: cancelar_venta(
+                    pk,
+                    request.user,
+                ),
+                "Error inesperado en cancelar_venta",
+            )
         )
+
         if err:
             return err
+
         return Response(
-            {"success": True, "message": "Venta cancelada correctamente.", "data": None},
+            {
+                "success": True,
+                "message": (
+                    "Venta cancelada correctamente."
+                ),
+                "data": None,
+            },
             status=status.HTTP_200_OK,
         )

@@ -5,9 +5,7 @@ from django.db import models
 from variantes.models import Variante
 from usuarios.models import Usuario
 
-
 class MovimientoInventario(models.Model):
-
     TIPOS = [
         ("ENTRADA", "Entrada"),
         ("SALIDA", "Salida"),
@@ -34,9 +32,9 @@ class MovimientoInventario(models.Model):
         choices=TIPOS
     )
 
-    # ==========================================================
-    # STOCK VENDIBLE
-    # ==========================================================
+# ==========================================================
+# STOCK VENDIBLE
+# ==========================================================
 
     stock_anterior = models.PositiveIntegerField(
         default=0
@@ -50,9 +48,9 @@ class MovimientoInventario(models.Model):
         default=0
     )
 
-    # ==========================================================
-    # STOCK DEFECTUOSO
-    # ==========================================================
+# ==========================================================
+# STOCK DEFECTUOSO
+# ==========================================================
 
     stock_defectuoso_anterior = models.PositiveIntegerField(
         default=0
@@ -77,8 +75,19 @@ class MovimientoInventario(models.Model):
         auto_now_add=True
     )
 
-    def __str__(self):
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["-fecha"],
+                name="mov_inv_fecha_idx"
+                ),
+            models.Index(
+                fields=["variante", "-fecha"],
+                name="mov_inv_var_fecha_idx"
+            ),
+        ]
 
+    def __str__(self):
         return (
             f"{self.tipo} - "
             f"{self.variante.nombre} - "

@@ -39,11 +39,12 @@ DEBUG = os.getenv("DEBUG") == "True"
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    "herself-destiny-chester-clear.trycloudflare.com",
+    "receivers-avon-answers-everywhere.trycloudflare.com",
 ]
 
+
 CSRF_TRUSTED_ORIGINS = [
-    "https://herself-destiny-chester-clear.trycloudflare.com",
+    "https://receivers-avon-answers-everywhere.trycloudflare.com",
 ]
 
 # En producción cambiar a False y listar solo los orígenes permitidos.

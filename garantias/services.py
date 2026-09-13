@@ -1,3 +1,4 @@
+import uuid
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -152,23 +153,73 @@ def _aprobar_cambio_producto(
     variante_nueva_id = data.get(
         "variante_nueva_id"
     )
+    
+
+    
 
     if not variante_nueva_id:
         raise BusinessException(
             "Debe especificar la variante nueva."
         )
+        
+    try:
+        variante_nueva_id = uuid.UUID(
+            str(variante_nueva_id)
+        )
+    except (ValueError, TypeError, AttributeError):
+        raise BusinessException(
+            "El identificador de la variante nueva "
+            "no es un UUID válido."
+        )
 
-    # ======================================================
-    # OBTENER VARIANTE ORIGINAL
+        # ======================================================
+    # OBTENER Y BLOQUEAR AMBAS VARIANTES
+    # EN ORDEN DETERMINÍSTICO
     # ======================================================
 
-    variante_original = (
+    variante_ids = sorted(
+        [
+            garantia.variante_id,
+            variante_nueva_id,
+        ],
+        key=str
+    )
+
+    variantes = list(
         Variante.objects
         .select_for_update()
-        .get(
-            id=garantia.variante_id
+        .filter(
+            id__in=variante_ids
         )
+        .order_by("id")
     )
+
+    variantes_map = {
+        variante.id: variante
+        for variante in variantes
+    }
+
+    if garantia.variante_id not in variantes_map:
+        raise BusinessException(
+            "La variante original no existe."
+        )
+
+    if variante_nueva_id not in variantes_map:
+        raise BusinessException(
+            "La variante nueva no existe."
+        )
+
+    variante_original = variantes_map[
+        garantia.variante_id
+    ]
+
+    variante_nueva = variantes_map[
+        variante_nueva_id
+    ]
+    
+        # ======================================================
+    # VALIDAR VARIANTE ORIGINAL
+    # ======================================================
 
     if not variante_original.activo:
         raise BusinessException(
@@ -180,24 +231,6 @@ def _aprobar_cambio_producto(
         raise BusinessException(
             "No se puede realizar el cambio porque "
             "el producto original está inactivo."
-        )
-
-    # ======================================================
-    # OBTENER VARIANTE NUEVA
-    # ======================================================
-
-    try:
-        variante_nueva = (
-            Variante.objects
-            .select_for_update()
-            .get(
-                id=variante_nueva_id
-            )
-        )
-
-    except Variante.DoesNotExist:
-        raise BusinessException(
-            "La variante nueva no existe."
         )
 
     # ======================================================
@@ -353,46 +386,171 @@ def crear_garantia(data, usuario):
 
 @transaction.atomic
 def aprobar_garantia(garantia_id, data, usuario):
+    # ========================================================
+    # OBTENER GARANTÍA SIN BLOQUEAR
+    # ========================================================
+
+    try:
+        garantia_base = (
+            Garantia.objects
+            .get(id=garantia_id)
+        )
+    except Garantia.DoesNotExist:
+        raise BusinessException(
+            "La garantía no existe."
+        )
+
+    # ========================================================
+    # LOCK 1: VENTA
+    # ========================================================
+
+    try:
+        venta = (
+            Venta.objects
+            .select_for_update()
+            .get(id=garantia_base.venta_id)
+        )
+    except Venta.DoesNotExist:
+        raise BusinessException(
+            "La venta asociada no existe."
+        )
+
+    if venta.estado == "CANCELADA":
+        raise BusinessException(
+            "No se puede aprobar una garantía "
+            "de una venta cancelada."
+        )
+
+    if venta.estado == "DEVUELTA":
+        raise BusinessException(
+            "No se puede aprobar una garantía "
+            "de una venta devuelta."
+        )
+
+    # ========================================================
+    # LOCK 2: GARANTÍA
+    # ========================================================
+
     try:
         garantia = (
             Garantia.objects
             .select_for_update()
-            .select_related("venta", "detalle_venta", "variante")
             .get(id=garantia_id)
         )
     except Garantia.DoesNotExist:
-        raise BusinessException("La garantía no existe.")
+        raise BusinessException(
+            "La garantía no existe."
+        )
 
     if garantia.estado != "PENDIENTE":
-        raise BusinessException("Solo se pueden aprobar garantías pendientes.")
+        raise BusinessException(
+            "Solo se pueden aprobar garantías pendientes."
+        )
 
-    resolucion = data["resolucion"]
     cantidad = garantia.cantidad
+    resolucion = data["resolucion"]
+
+    # ========================================================
+    # LOCK 3: DETALLE DE VENTA
+    # ========================================================
+
+    try:
+        detalle_venta = (
+            DetalleVenta.objects
+            .select_for_update()
+            .get(
+                id=garantia.detalle_venta_id,
+                venta=venta
+            )
+        )
+    except DetalleVenta.DoesNotExist:
+        raise BusinessException(
+            "El detalle de venta asociado no existe."
+        )
+
+    # ========================================================
+    # VALIDAR QUE LA VARIANTE SIGA SIENDO LA CORRECTA
+    # ========================================================
+
+    if garantia.variante_id != detalle_venta.variante_id:
+        raise BusinessException(
+            "La variante de la garantía no corresponde "
+            "al detalle de venta."
+        )
+
+    # ========================================================
+    # VALIDAR DISPONIBILIDAD
+    # ========================================================
+
+    _validar_disponibilidad(
+        detalle_venta,
+        cantidad
+    )
+
+    # ========================================================
+    # RESOLUCIÓN
+    # ========================================================
 
     if resolucion == "REEMPLAZO":
-        _aprobar_reemplazo(garantia, cantidad, usuario)
+
+        _aprobar_reemplazo(
+            garantia,
+            cantidad,
+            usuario
+        )
+
     elif resolucion == "CAMBIO_PRODUCTO":
-        _aprobar_cambio_producto(garantia, cantidad, data, usuario)
+
+        _aprobar_cambio_producto(
+            garantia,
+            cantidad,
+            data,
+            usuario
+        )
+
     elif resolucion == "REPARACION":
+
         pass
+
+    # ========================================================
+    # ACTUALIZAR GARANTÍA
+    # ========================================================
 
     garantia.estado = "APROBADA"
     garantia.resolucion = resolucion
-    garantia.observaciones = data.get("observaciones")
-    garantia.save(update_fields=["estado", "resolucion", "observaciones", "variante_nueva_id", "fecha_actualizacion"])
+    garantia.observaciones = data.get(
+        "observaciones"
+    )
+
+    garantia.save(
+        update_fields=[
+            "estado",
+            "resolucion",
+            "observaciones",
+            "variante_nueva_id",
+            "fecha_actualizacion",
+        ]
+    )
+
+    # ========================================================
+    # BITÁCORA
+    # ========================================================
 
     registrar_bitacora(
         usuario=usuario,
         modulo="Garantias",
         accion="APROBAR_GARANTIA",
         descripcion=(
-            f"Garantía {garantia.id} aprobada por {usuario.nombre} {usuario.apellido}. "
-            f"Venta: '{garantia.venta.folio}'. Variante: '{garantia.variante.nombre}'. "
-            f"Cantidad: {cantidad}. Resolución: {resolucion}."
+            f"Garantía {garantia.id} aprobada por "
+            f"{usuario.nombre} {usuario.apellido}. "
+            f"Venta: '{venta.folio}'. "
+            f"Variante: '{garantia.variante.nombre}'. "
+            f"Cantidad: {cantidad}. "
+            f"Resolución: {resolucion}."
         ),
     )
-    return garantia
 
+    return garantia
 
 # ============================================================
 # RECHAZAR GARANTÍA

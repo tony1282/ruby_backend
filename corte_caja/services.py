@@ -1,5 +1,5 @@
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.db import transaction
 from django.db.models import Sum
@@ -11,6 +11,9 @@ from bitacora.services import registrar_bitacora
 from config.exceptions import BusinessException
 
 from .models import CorteCaja, MovimientoCaja
+
+
+_Q = Decimal("0.01")
 
 
 # ==============================================================
@@ -46,12 +49,20 @@ def validar_efectivo(valor, nombre):
             f"El {nombre} no es un valor numérico válido."
         )
 
+    if not monto.is_finite():
+        raise BusinessException(
+            f"El {nombre} no es un valor válido."
+        )
+
     if monto < 0:
         raise BusinessException(
             f"El {nombre} no puede ser negativo."
         )
 
-    return monto
+    return monto.quantize(
+        _Q,
+        rounding=ROUND_HALF_UP
+    )
 
 
 # ==============================================================
@@ -76,23 +87,16 @@ def abrir_caja(caja_id, efectivo_inicial_raw, usuario):
         raise BusinessException(
             "La caja no existe."
         )
+
     if not usuario.activo:
         raise BusinessException(
-            "El usuario no está activo y no puede abrir la caja"
+            "El usuario no está activo y no puede abrir la caja."
         )
-
-    # ----------------------------------------------------------
-    # VALIDAR QUE LA CAJA ESTÉ ACTIVA
-    # ----------------------------------------------------------
 
     if not caja.activa:
         raise BusinessException(
             "La caja está inactiva y no puede abrirse."
         )
-
-    # ----------------------------------------------------------
-    # VALIDAR QUE NO EXISTA OTRO CORTE ABIERTO
-    # ----------------------------------------------------------
 
     if CorteCaja.objects.filter(
         caja=caja,
@@ -103,19 +107,11 @@ def abrir_caja(caja_id, efectivo_inicial_raw, usuario):
             "Ya existe un corte abierto para esta caja."
         )
 
-    # ----------------------------------------------------------
-    # CREAR CORTE
-    # ----------------------------------------------------------
-
     corte = CorteCaja.objects.create(
         caja=caja,
         usuario=usuario,
         efectivo_inicial=efectivo_inicial,
     )
-
-    # ----------------------------------------------------------
-    # ACTUALIZAR ESTADO DE LA CAJA
-    # ----------------------------------------------------------
 
     caja.estado = Caja.ESTADO_ABIERTA
 
@@ -124,10 +120,6 @@ def abrir_caja(caja_id, efectivo_inicial_raw, usuario):
             "estado"
         ]
     )
-
-    # ----------------------------------------------------------
-    # BITÁCORA
-    # ----------------------------------------------------------
 
     registrar_bitacora(
         usuario=usuario,
@@ -147,20 +139,6 @@ def abrir_caja(caja_id, efectivo_inicial_raw, usuario):
 # CERRAR CAJA
 # ==============================================================
 
-# Estados considerados como venta válida para el cálculo
-# de ventas del corte.
-#
-# COMPLETADA:
-#   La venta sigue vigente.
-#
-# DEVUELTA:
-#   La venta existió y generó un cobro, pero el reembolso
-#   se descuenta por separado mediante MovimientoCaja.
-#
-# CANCELADA:
-#   No debe contabilizarse en las ventas ni en el efectivo
-#   esperado.
-#
 ESTADOS_VENTA_VALIDA = [
     "COMPLETADA",
     "DEVUELTA"
@@ -181,43 +159,64 @@ def cerrar_caja(
         "efectivo final"
     )
 
+    # ----------------------------------------------------------
+    # LOCK GLOBAL:
+    #
+    # Siempre:
+    #
+    # Caja → CorteCaja
+    #
+    # Esto mantiene el mismo orden utilizado por crear_venta().
+    # ----------------------------------------------------------
+
     try:
-        corte = (
-            CorteCaja.objects
+        caja = (
+            Caja.objects
             .select_for_update()
-            .select_related("caja")
-            .get(
-                caja_id=caja_id,
-                fecha_fin__isnull=True
-            )
+            .get(id=caja_id)
         )
-
-    except CorteCaja.DoesNotExist:
-
+    except Caja.DoesNotExist:
         raise BusinessException(
-            "No existe un corte abierto."
+            "La caja no existe."
         )
-        
+
     if not usuario.activo:
         raise BusinessException(
             "El usuario está inactivo y no puede cerrar la caja."
         )
-    
-    if not corte.caja.activa:
+
+    if not caja.activa:
         raise BusinessException(
             "La caja está inactiva y no puede cerrarse."
         )
-        
-    if corte.caja.estado != Caja.ESTADO_ABIERTA:
+
+    if caja.estado != Caja.ESTADO_ABIERTA:
         raise BusinessException(
             "La caja no se encuentra en estado abierta."
+        )
+
+    try:
+        corte = (
+            CorteCaja.objects
+            .select_for_update()
+            .get(
+                caja=caja,
+                fecha_fin__isnull=True
+            )
+        )
+    except CorteCaja.DoesNotExist:
+        raise BusinessException(
+            "No existe un corte abierto."
         )
 
     # ----------------------------------------------------------
     # VALIDAR PERMISOS DE CIERRE
     # ----------------------------------------------------------
 
-    if usuario.rol not in (0, 1) and corte.usuario_id != usuario.id:
+    if (
+        usuario.rol not in (0, 1)
+        and corte.usuario_id != usuario.id
+    ):
 
         raise BusinessException(
             "Solo puedes cerrar la caja que tú abriste."
@@ -240,6 +239,11 @@ def cerrar_caja(
         or Decimal("0.00")
     )
 
+    total_ventas_efectivo = total_ventas_efectivo.quantize(
+        _Q,
+        rounding=ROUND_HALF_UP
+    )
+
     # ----------------------------------------------------------
     # TOTAL DE REEMBOLSOS EN EFECTIVO
     # ----------------------------------------------------------
@@ -257,6 +261,13 @@ def cerrar_caja(
         or Decimal("0.00")
     )
 
+    total_reembolsos_efectivo = (
+        total_reembolsos_efectivo.quantize(
+            _Q,
+            rounding=ROUND_HALF_UP
+        )
+    )
+
     # ----------------------------------------------------------
     # EFECTIVO ESPERADO
     # ----------------------------------------------------------
@@ -265,6 +276,9 @@ def cerrar_caja(
         corte.efectivo_inicial
         + total_ventas_efectivo
         - total_reembolsos_efectivo
+    ).quantize(
+        _Q,
+        rounding=ROUND_HALF_UP
     )
 
     # ----------------------------------------------------------
@@ -274,6 +288,9 @@ def cerrar_caja(
     diferencia = (
         efectivo_final
         - efectivo_esperado
+    ).quantize(
+        _Q,
+        rounding=ROUND_HALF_UP
     )
 
     # ----------------------------------------------------------
@@ -296,9 +313,9 @@ def cerrar_caja(
     # ACTUALIZAR ESTADO DE LA CAJA
     # ----------------------------------------------------------
 
-    corte.caja.estado = Caja.ESTADO_CERRADA
+    caja.estado = Caja.ESTADO_CERRADA
 
-    corte.caja.save(
+    caja.save(
         update_fields=[
             "estado"
         ]
@@ -313,7 +330,7 @@ def cerrar_caja(
         modulo="Caja",
         accion="CIERRE_CAJA",
         descripcion=(
-            f"Caja '{corte.caja.nombre}' cerrada correctamente por "
+            f"Caja '{caja.nombre}' cerrada correctamente por "
             f"{usuario.nombre} {usuario.apellido}. "
             f"Efectivo esperado: ${efectivo_esperado:.2f}. "
             f"Efectivo contado: ${efectivo_final:.2f}. "

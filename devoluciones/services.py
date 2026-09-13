@@ -7,6 +7,7 @@ from ventas.models import Venta
 from empresa.models import Empresa
 from detalle_venta.models import DetalleVenta
 from inventario.models import MovimientoInventario
+from cajas.models import Caja
 from corte_caja.models import MovimientoCaja, CorteCaja
 from garantias.models import Garantia
 from variantes.models import Variante
@@ -263,55 +264,84 @@ def _calcular_total_devuelto(
 # HELPERS APROBAR DEVOLUCIÓN
 # ============================================================
 
-def _validar_cantidades_aprobacion(
-    detalles,
-    devolucion
-):
+def _validar_cantidades_aprobacion(detalles, devolucion):
+    detalle_ids = [
+        detalle.detalle_venta_id
+        for detalle in detalles
+    ]
+
+    if not detalle_ids:
+        return
+
+    cantidades_devoluciones = (
+        DetalleDevolucion.objects
+        .filter(
+            detalle_venta_id__in=detalle_ids,
+            devolucion__estado__in=["APROBADA", "PENDIENTE"],
+        )
+        .exclude(
+            devolucion_id=devolucion.id
+        )
+        .values("detalle_venta_id")
+        .annotate(
+            cantidad_aprobada=models.Sum(
+                "cantidad",
+                filter=models.Q(
+                    devolucion__estado="APROBADA"
+                ),
+            ),
+            cantidad_pendiente=models.Sum(
+                "cantidad",
+                filter=models.Q(
+                    devolucion__estado="PENDIENTE"
+                ),
+            ),
+        )
+    )
+
+    cantidades_devoluciones_map = {
+        item["detalle_venta_id"]: {
+            "aprobada": item["cantidad_aprobada"] or 0,
+            "pendiente": item["cantidad_pendiente"] or 0,
+        }
+        for item in cantidades_devoluciones
+    }
+
+    cantidades_garantias = (
+        Garantia.objects
+        .filter(
+            detalle_venta_id__in=detalle_ids,
+            estado__in=["PENDIENTE", "APROBADA"],
+        )
+        .values("detalle_venta_id")
+        .annotate(
+            total=models.Sum("cantidad")
+        )
+    )
+
+    cantidades_garantias_map = {
+        item["detalle_venta_id"]: item["total"] or 0
+        for item in cantidades_garantias
+    }
 
     for detalle in detalles:
-
         detalle_venta = detalle.detalle_venta
+        detalle_id = detalle.detalle_venta_id
 
-        cantidad_aprobada = (
-            DetalleDevolucion.objects
-            .filter(
-                detalle_venta=detalle_venta,
-                devolucion__estado="APROBADA"
-            )
-            .aggregate(
-                total=models.Sum("cantidad")
-            )["total"]
-            or 0
+        cantidades = cantidades_devoluciones_map.get(
+            detalle_id,
+            {
+                "aprobada": 0,
+                "pendiente": 0,
+            },
         )
 
-        cantidad_pendiente = (
-            DetalleDevolucion.objects
-            .filter(
-                detalle_venta=detalle_venta,
-                devolucion__estado="PENDIENTE"
-            )
-            .exclude(
-                devolucion=devolucion
-            )
-            .aggregate(
-                total=models.Sum("cantidad")
-            )["total"]
-            or 0
-        )
+        cantidad_aprobada = cantidades["aprobada"]
+        cantidad_pendiente = cantidades["pendiente"]
 
-        cantidad_garantizada = (
-            Garantia.objects
-            .filter(
-                detalle_venta=detalle_venta,
-                estado__in=[
-                    "PENDIENTE",
-                    "APROBADA",
-                ]
-            )
-            .aggregate(
-                total=models.Sum("cantidad")
-            )["total"]
-            or 0
+        cantidad_garantizada = cantidades_garantias_map.get(
+            detalle_id,
+            0,
         )
 
         disponible = max(
@@ -319,37 +349,77 @@ def _validar_cantidades_aprobacion(
             - cantidad_aprobada
             - cantidad_pendiente
             - cantidad_garantizada,
-            0
+            0,
         )
 
         if detalle.cantidad > disponible:
-
             raise BusinessException(
                 "La cantidad devuelta supera "
                 "la cantidad disponible."
             )
 
+   
+def _obtener_corte_efectivo(caja, corte):
+    if not caja.activa:
+        raise BusinessException(
+            "La caja está inactiva y no puede registrar el reembolso."
+        )
 
-def _obtener_corte_efectivo(venta):
+    if caja.estado != Caja.ESTADO_ABIERTA:
+        raise BusinessException(
+            "La caja no se encuentra abierta para registrar el reembolso."
+        )
+
+    if not corte:
+        raise BusinessException(
+            "No existe un corte de caja abierto para registrar el reembolso."
+        )
+
+    if corte.fecha_fin is not None:
+        raise BusinessException(
+            "El corte de caja ya se encuentra cerrado."
+        )
+
+    return corte
 
     if not venta.corte_caja:
-
         raise BusinessException(
             "La venta no tiene un corte de caja asociado."
         )
 
-    corte = (
-        CorteCaja.objects
-        .select_for_update()
-        .filter(
-            caja=venta.corte_caja.caja,
-            fecha_fin__isnull=True
+    try:
+        caja = (
+            Caja.objects
+            .select_for_update()
+            .get(
+                id=venta.corte_caja.caja_id
+            )
         )
-        .first()
-    )
+    except Caja.DoesNotExist:
+        raise BusinessException(
+            "La caja asociada a la venta no existe."
+        )
 
-    if not corte:
+    if not caja.activa:
+        raise BusinessException(
+            "La caja está inactiva y no puede registrar el reembolso."
+        )
 
+    if caja.estado != Caja.ESTADO_ABIERTA:
+        raise BusinessException(
+            "La caja no se encuentra abierta para registrar el reembolso."
+        )
+
+    try:
+        corte = (
+            CorteCaja.objects
+            .select_for_update()
+            .get(
+                caja=caja,
+                fecha_fin__isnull=True
+            )
+        )
+    except CorteCaja.DoesNotExist:
         raise BusinessException(
             "No existe un corte de caja abierto "
             "para registrar el reembolso."
@@ -357,14 +427,19 @@ def _obtener_corte_efectivo(venta):
 
     return corte
 
-
 def _reponer_stock(
     detalles,
     devolucion,
     usuario
 ):
 
-    for detalle in detalles:
+    for detalle in sorted(
+        detalles,
+        key=lambda detalle: str(
+            detalle.detalle_venta_id
+            )
+    ):
+
 
         variante = (
             Variante.objects
@@ -541,9 +616,104 @@ def aprobar_devolucion(
     devolucion_id,
     usuario
 ):
+    # ========================================================
+    # OBTENER DEVOLUCIÓN SIN BLOQUEAR
+    # ========================================================
+    #
+    # Solo necesitamos conocer la venta asociada para poder
+    # adquirir los locks en el orden global correcto.
+    #
+    try:
+        devolucion_base = (
+            Devolucion.objects
+            .get(id=devolucion_id)
+        )
+
+    except Devolucion.DoesNotExist:
+        raise BusinessException(
+            "La devolución no existe."
+        )
+
+    # ========================================================
+    # OBTENER VENTA SIN BLOQUEAR
+    # ========================================================
 
     try:
+        venta_base = (
+            Venta.objects
+            .select_related("corte_caja")
+            .get(id=devolucion_base.venta_id)
+        )
 
+    except Venta.DoesNotExist:
+        raise BusinessException(
+            "La venta asociada no existe."
+        )
+
+    if not venta_base.corte_caja:
+        raise BusinessException(
+            "La venta no tiene un corte de caja asociado."
+        )
+
+    caja_id = venta_base.corte_caja.caja_id
+    corte_id = venta_base.corte_caja_id
+
+    # ========================================================
+    # LOCK 1: CAJA
+    # ========================================================
+
+    try:
+        caja = (
+            Caja.objects
+            .select_for_update()
+            .get(id=caja_id)
+        )
+
+    except Caja.DoesNotExist:
+        raise BusinessException(
+            "La caja asociada a la venta no existe."
+        )
+
+    # ========================================================
+    # LOCK 2: CORTE
+    # ========================================================
+
+    try:
+        corte = (
+            CorteCaja.objects
+            .select_for_update()
+            .get(
+                id=corte_id,
+                caja=caja
+            )
+        )
+
+    except CorteCaja.DoesNotExist:
+        raise BusinessException(
+            "El corte de caja asociado a la venta no existe."
+        )
+
+    # ========================================================
+    # LOCK 3: VENTA
+    # ========================================================
+
+    try:
+        venta = (
+            Venta.objects
+            .select_for_update()
+            .get(id=devolucion_base.venta_id)
+        )
+
+    except Venta.DoesNotExist:
+        raise BusinessException(
+            "La venta asociada no existe."
+        )
+
+    # ========================================================
+    # LOCK 4: DEVOLUCIÓN
+    # ========================================================
+
+    try:
         devolucion = (
             Devolucion.objects
             .select_for_update()
@@ -551,67 +721,95 @@ def aprobar_devolucion(
         )
 
     except Devolucion.DoesNotExist:
-
         raise BusinessException(
             "La devolución no existe."
         )
 
-    if devolucion.estado != "PENDIENTE":
+    # ========================================================
+    # VALIDACIONES
+    # ========================================================
 
+    if devolucion.estado != "PENDIENTE":
         raise BusinessException(
             "Solo se pueden aprobar devoluciones pendientes."
         )
 
-    try:
-
-        venta = (
-            Venta.objects
-            .select_for_update()
-            .get(id=devolucion.venta_id)
-        )
-
-    except Venta.DoesNotExist:
-
-        raise BusinessException(
-            "La venta asociada no existe."
-        )
-
     if venta.estado == "CANCELADA":
-
         raise BusinessException(
             "No se puede aprobar una devolución "
             "de una venta cancelada."
         )
 
     if venta.estado == "DEVUELTA":
-
         raise BusinessException(
             "La venta ya fue devuelta completamente."
         )
 
     if not devolucion.metodo_pago_reembolso:
-
         raise BusinessException(
             "La devolución no tiene un método de reembolso."
         )
 
-    metodo_pago = (
-        devolucion.metodo_pago_reembolso
+    metodo_pago = devolucion.metodo_pago_reembolso
+
+    # ========================================================
+    # LOCK 5: DETALLES DE VENTA
+    # ========================================================
+    #
+    # Se bloquean los detalles involucrados antes de validar
+    # cantidades para sincronizar devoluciones y garantías.
+    #
+    detalles_devolucion = list(
+        devolucion.detalles.all()
     )
 
-    detalles = list(
-        devolucion.detalles
-        .select_related("detalle_venta")
-    )
-
-    if not detalles:
-
+    if not detalles_devolucion:
         raise BusinessException(
             "La devolución no tiene productos."
         )
 
+    detalle_venta_ids = sorted(
+        {
+            detalle.detalle_venta_id
+            for detalle in detalles_devolucion
+        },
+        key=str
+    )
+
+    detalles_venta = list(
+        DetalleVenta.objects
+        .select_for_update()
+        .filter(
+            id__in=detalle_venta_ids,
+            venta=venta
+        )
+        .order_by("id")
+    )
+
+    if len(detalles_venta) != len(detalle_venta_ids):
+        raise BusinessException(
+            "Uno o más productos de la devolución "
+            "no pertenecen a la venta."
+        )
+
+    detalles_venta_map = {
+        detalle.id: detalle
+        for detalle in detalles_venta
+    }
+
+    # Reasociamos cada detalle de devolución con el
+    # DetailVenta ya bloqueado.
+    for detalle in detalles_devolucion:
+        detalle.detalle_venta = detalles_venta_map[
+            detalle.detalle_venta_id
+        ]
+
+    # ========================================================
+    # VALIDAR CANTIDADES
+    # ========================================================
+
     _validar_cantidades_aprobacion(
-        detalles,
+        detalles_devolucion,
         devolucion
     )
 
@@ -620,33 +818,38 @@ def aprobar_devolucion(
     # ========================================================
 
     if metodo_pago.nombre == "EFECTIVO":
-
         corte = _obtener_corte_efectivo(
-            venta
+            caja,
+            corte
         )
 
+    # Para métodos no efectivos se conserva el corte de la
+    # venta. El corte ya está bloqueado arriba para evitar
+    # carreras con el cierre de caja.
     else:
-
-        corte = venta.corte_caja
-
-        if not corte:
-
+        if corte is None:
             raise BusinessException(
                 "La venta no tiene un corte de caja asociado."
             )
 
     # ========================================================
-    # REPONER STOCK
+    # LOCK 6: VARIANTES
+    # ========================================================
+    #
+    # _reponer_stock() adquiere los locks de las variantes.
+    # Los detalles están ordenados por id, por lo que el
+    # orden de adquisición queda determinístico.
+    #
     # ========================================================
 
     _reponer_stock(
-        detalles,
+        detalles_devolucion,
         devolucion,
         usuario
     )
 
     # ========================================================
-    # REGISTRAR REEMBOLSO
+    # MOVIMIENTO DE CAJA
     # ========================================================
 
     MovimientoCaja.objects.create(
@@ -700,7 +903,6 @@ def aprobar_devolucion(
     # ========================================================
 
     if _venta_completamente_devuelta(venta):
-
         venta.estado = "DEVUELTA"
 
         venta.save(
@@ -710,7 +912,6 @@ def aprobar_devolucion(
         )
 
     return devolucion
-
 
 # ============================================================
 # RECHAZAR DEVOLUCIÓN

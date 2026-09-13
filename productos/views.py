@@ -1,15 +1,14 @@
-from django.db import transaction, IntegrityError
+from django.db import IntegrityError
 
 from rest_framework import (
     viewsets,
-    status
+    status,
 )
 
 from rest_framework.response import Response
-from config.exceptions import BusinessException
 
 from rest_framework.permissions import (
-    IsAuthenticated
+    IsAuthenticated,
 )
 
 from rest_framework.decorators import action
@@ -19,19 +18,26 @@ from rest_framework.pagination import PageNumberPagination
 from .models import Producto
 
 from .serializers import (
-    ProductoSerializer
+    ProductoSerializer,
+)
+
+from .services import (
+    crear_producto,
+    actualizar_producto,
+    activar_producto,
+    desactivar_producto,
 )
 
 from usuarios.permissions import (
-    IsAdmin
+    IsAdmin,
 )
 
-from bitacora.services import (
-    registrar_bitacora
-)
+from config.exceptions import BusinessException
 
 
-class ProductoPagination(PageNumberPagination):
+class ProductoPagination(
+    PageNumberPagination
+):
 
     page_size = 50
 
@@ -44,18 +50,19 @@ class ProductoViewSet(
     viewsets.ModelViewSet
 ):
 
-    queryset = Producto.objects.filter(
-        activo=True
+    queryset = (
+        Producto.objects
+        .filter(activo=True)
+        .select_related("categoria")
     )
 
     serializer_class = ProductoSerializer
 
     pagination_class = ProductoPagination
 
-    # ----------------------------------------------------------
-    # SIN DELETE: el ciclo de vida se maneja con
-    # activar/desactivar, no con el método HTTP DELETE.
-    # ----------------------------------------------------------
+    # ==========================================================
+    # SIN DELETE
+    # ==========================================================
 
     http_method_names = [
         "get",
@@ -63,9 +70,8 @@ class ProductoViewSet(
         "put",
         "patch",
         "head",
-        "options"
+        "options",
     ]
-
 
     # ==========================================================
     # QUERYSET
@@ -78,110 +84,113 @@ class ProductoViewSet(
         es_admin = (
             user
             and user.is_authenticated
+            and getattr(user, "activo", False)
             and user.rol in (0, 1)
         )
-
-        # ------------------------------------------------------
-        # PARA MODIFICAR, ACTIVAR O DESACTIVAR
-        # (necesita poder encontrar productos inactivos para
-        # reactivarlos)
-        # ------------------------------------------------------
 
         if self.action in [
             "update",
             "partial_update",
             "activar",
-            "desactivar"
+            "desactivar",
         ]:
 
-            return Producto.objects.all()
+            return (
+                Producto.objects
+                .all()
+                .select_related("categoria")
+            )
 
-        # ------------------------------------------------------
-        # CONSULTAR DETALLE — ADMIN/SUPERADMIN
-        # --------------------------------------------------
-        # Un admin debe poder abrir el detalle de un producto
-        # inactivo (GET /productos/{id}/), no solo activarlo/
-        # desactivarlo a ciegas.
-        # ------------------------------------------------------
+        if (
+            self.action == "retrieve"
+            and es_admin
+        ):
 
-        if self.action == "retrieve" and es_admin:
+            return (
+                Producto.objects
+                .all()
+                .select_related("categoria")
+            )
 
-            return Producto.objects.all()
+        if (
+            self.action == "list"
+            and es_admin
+        ):
 
-        # ------------------------------------------------------
-        # LISTADO — ADMIN/SUPERADMIN
-        # --------------------------------------------------
-        # Por defecto sigue mostrando solo activos (mismo
-        # comportamiento de siempre), pero un admin puede pedir
-        # explícitamente los inactivos o todos con ?activo=.
-        # ------------------------------------------------------
-
-        if self.action == "list" and es_admin:
-
-            activo_param = self.request.query_params.get(
-                "activo"
+            activo_param = (
+                self.request.query_params.get(
+                    "activo"
+                )
             )
 
             if activo_param is not None:
 
                 if activo_param.lower() == "todos":
 
-                    return Producto.objects.all().order_by(
-                        "nombre",
-                        "id"
+                    return (
+                        Producto.objects
+                        .all()
+                        .select_related("categoria")
+                        .order_by(
+                            "nombre",
+                            "id",
+                        )
                     )
 
-                return Producto.objects.filter(
-                    activo=activo_param.lower() in ("true", "1")
-                ).order_by(
-                    "nombre",
-                    "id"
+                return (
+                    Producto.objects
+                    .filter(
+                        activo=(
+                            activo_param.lower()
+                            in ("true", "1")
+                        )
+                    )
+                    .select_related("categoria")
+                    .order_by(
+                        "nombre",
+                        "id",
+                    )
                 )
 
-        # ------------------------------------------------------
-        # CONSULTAS NORMALES (empleados, o admin sin filtro)
-        # ------------------------------------------------------
-
-        return Producto.objects.filter(
-            activo=True
-        ).order_by(
-            "nombre",
-            "id"
+        return (
+            Producto.objects
+            .filter(activo=True)
+            .select_related("categoria")
+            .order_by(
+                "nombre",
+                "id",
+            )
         )
-
 
     # ==========================================================
     # PERMISOS
     # ==========================================================
 
-    def get_permissions(
-        self
-    ):
+    def get_permissions(self):
 
         if self.action in [
             "list",
-            "retrieve"
+            "retrieve",
         ]:
 
             return [
-                IsAuthenticated()
+                IsAuthenticated(),
             ]
 
         return [
             IsAuthenticated(),
-            IsAdmin()
+            IsAdmin(),
         ]
 
-
     # ==========================================================
-    # CREAR PRODUCTO
+    # CREAR
     # ==========================================================
 
     def create(
         self,
         request,
         *args,
-        **kwargs
+        **kwargs,
     ):
 
         serializer = self.get_serializer(
@@ -191,317 +200,268 @@ class ProductoViewSet(
         if not serializer.is_valid():
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
                         "No se pudo registrar "
                         "el producto."
                     ),
-
-                    "data": serializer.errors
+                    "data": serializer.errors,
                 },
-
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
 
-            with transaction.atomic():
+            producto = crear_producto(
+                validated_data=(
+                    serializer.validated_data
+                ),
+                usuario=request.user,
+            )
 
-                producto = serializer.save()
+        except BusinessException as exc:
 
-                registrar_bitacora(
-
-                    usuario=request.user,
-
-                    modulo="Productos",
-
-                    accion="CREAR_PRODUCTO",
-
-                    descripcion=(
-
-                        f"Producto '{producto.nombre}' "
-
-                        f"creado correctamente por "
-
-                        f"{request.user.nombre} "
-
-                        f"{request.user.apellido}."
-                    )
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         except IntegrityError:
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
                         "Ya existe un producto "
                         "con este nombre."
                     ),
-
-                    "data": None
+                    "data": None,
                 },
-
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_409_CONFLICT,
             )
 
-        return Response(
+        serializer.instance = producto
 
+        return Response(
             {
                 "success": True,
-
                 "message": (
                     "Producto registrado "
                     "correctamente."
                 ),
-
-                "data": ProductoSerializer(
-                    producto
-                ).data
+                "data": serializer.data,
             },
-
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
-
     # ==========================================================
-    # MODIFICAR PRODUCTO
-    # (el estado 'activo' ya no puede cambiar aquí: lo
-    # bloquea el serializer y se administra en activar/
-    # desactivar)
+    # MODIFICAR
     # ==========================================================
 
-    def perform_update(
+    def update(
         self,
-        serializer
+        request,
+        *args,
+        **kwargs,
     ):
 
-        with transaction.atomic():
+        partial = kwargs.pop(
+            "partial",
+            False,
+        )
 
-            producto = serializer.save()
+        instancia = self.get_object()
 
-            registrar_bitacora(
+        serializer = self.get_serializer(
+            instancia,
+            data=request.data,
+            partial=partial,
+        )
 
-                usuario=self.request.user,
+        if not serializer.is_valid():
 
-                modulo="Productos",
-
-                accion="MODIFICAR_PRODUCTO",
-
-                descripcion=(
-
-                    f"Producto '{producto.nombre}' "
-
-                    f"modificado correctamente por "
-
-                    f"{self.request.user.nombre} "
-
-                    f"{self.request.user.apellido}."
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "No se pudo modificar "
+                        "el producto."
+                    ),
+                    "data": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
+        try:
+
+            producto = actualizar_producto(
+                instancia=instancia,
+                validated_data=(
+                    serializer.validated_data
+                ),
+                usuario=request.user,
+            )
+
+        except BusinessException as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        except IntegrityError:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "Ya existe un producto "
+                        "con este nombre."
+                    ),
+                    "data": None,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        serializer.instance = producto
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    "Producto modificado "
+                    "correctamente."
+                ),
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     # ==========================================================
-    # ACTIVAR PRODUCTO
+    # ACTIVAR
     # ==========================================================
 
     @action(
         detail=True,
         methods=["post"],
-        url_path="activar"
+        url_path="activar",
     )
     def activar(
         self,
         request,
-        pk=None
+        pk=None,
     ):
 
-        producto = self.get_object()
+        try:
 
-        if producto.activo:
+            producto = activar_producto(
+                producto_id=pk,
+                usuario=request.user,
+            )
+
+        except Producto.DoesNotExist:
 
             return Response(
-
                 {
                     "success": False,
-
                     "message": (
-                        "El producto ya está activo."
+                        "No existe el producto "
+                        "solicitado."
                     ),
-
-                    "data": None
+                    "data": None,
                 },
-
-                status=status.HTTP_400_BAD_REQUEST
-            )
-            
-        if not producto.categoria.activo:
-            raise BusinessException(
-                "No se puede activar el producto "
-                "porque su categoría está inactiva."
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        with transaction.atomic():
+        except BusinessException as exc:
 
-            producto.activo = True
-
-            producto.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
-                usuario=request.user,
-
-                modulo="Productos",
-
-                accion="ACTIVAR_PRODUCTO",
-
-                descripcion=(
-
-                    f"Producto '{producto.nombre}' "
-
-                    f"activado correctamente por "
-
-                    f"{request.user.nombre} "
-
-                    f"{request.user.apellido}."
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
-
             {
                 "success": True,
-
                 "message": (
                     "Producto activado "
                     "correctamente."
                 ),
-
                 "data": ProductoSerializer(
                     producto
-                ).data
+                ).data,
             },
-
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
-
     # ==========================================================
-    # DESACTIVAR PRODUCTO
+    # DESACTIVAR
     # ==========================================================
 
     @action(
         detail=True,
         methods=["post"],
-        url_path="desactivar"
+        url_path="desactivar",
     )
     def desactivar(
         self,
         request,
-        pk=None
+        pk=None,
     ):
 
-        producto = self.get_object()
+        try:
 
-        if not producto.activo:
-
-            return Response(
-
-                {
-                    "success": False,
-
-                    "message": (
-                        "El producto ya está inactivo."
-                    ),
-
-                    "data": None
-                },
-
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ------------------------------------------------------
-        # NO DESACTIVAR SI TIENE VARIANTES ACTIVAS
-        # ------------------------------------------------------
-
-        if producto.variantes.filter(
-            activo=True
-        ).exists():
-
-            return Response(
-
-                {
-                    "success": False,
-
-                    "message": (
-                        "No se puede desactivar "
-                        "el producto porque tiene "
-                        "variantes activas."
-                    ),
-
-                    "data": None
-                },
-
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ------------------------------------------------------
-        # DESACTIVACIÓN LÓGICA
-        # ------------------------------------------------------
-
-        with transaction.atomic():
-
-            producto.activo = False
-
-            producto.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
+            producto = desactivar_producto(
+                producto_id=pk,
                 usuario=request.user,
+            )
 
-                modulo="Productos",
+        except Producto.DoesNotExist:
 
-                accion="DESACTIVAR_PRODUCTO",
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "No existe el producto "
+                        "solicitado."
+                    ),
+                    "data": None,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-                descripcion=(
+        except BusinessException as exc:
 
-                    f"Producto '{producto.nombre}' "
-
-                    f"desactivado correctamente por "
-
-                    f"{request.user.nombre} "
-
-                    f"{request.user.apellido}."
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": None,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
-
             {
                 "success": True,
-
                 "message": (
                     "Producto desactivado "
                     "correctamente."
                 ),
-
-                "data": None
+                "data": None,
             },
-
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
