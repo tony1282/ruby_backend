@@ -35,12 +35,39 @@ class CrearDevolucionSerializer(
     motivo = serializers.CharField(
         allow_blank=False
     )
+    metodo_pago_reembolso_id = serializers.UUIDField()
+
 
     productos = ProductoDevolucionSerializer(
         many=True,
         allow_empty=False
     )
+    
 
+
+class ActualizarDevolucionSerializer(
+    serializers.Serializer
+):
+
+    tipo = serializers.ChoiceField(
+        choices=[
+            "NORMAL",
+            "DEFECTUOSO",
+            "GARANTIA",
+            "EXTRAORDINARIA"
+        ],
+        required=False
+    )
+
+    motivo = serializers.CharField(
+        allow_blank=False,
+        required=False
+    )
+
+    metodo_pago_reembolso_id = serializers.UUIDField(
+        required=False
+    )
+    
 
 class DetalleDevolucionSerializer(
     serializers.ModelSerializer
@@ -131,3 +158,23 @@ class DevolucionSerializer(
             "fecha",
             "detalles"
         ]
+        
+class DetalleVentaParaDevolucionSerializer(serializers.Serializer):
+    detalle_venta_id = serializers.UUIDField()
+    variante_id = serializers.UUIDField()
+    producto = serializers.CharField()
+    variante = serializers.CharField()
+    vendido = serializers.IntegerField()
+    devuelto = serializers.IntegerField()
+    en_garantia = serializers.IntegerField()
+    disponible_devolucion = serializers.IntegerField()
+
+
+class VentaParaDevolucionSerializer(serializers.Serializer):
+    folio = serializers.CharField()
+    fecha = serializers.DateTimeField()
+    usuario = serializers.CharField()
+    estado = serializers.CharField()
+    metodo_pago = serializers.CharField()
+    productos = DetalleVentaParaDevolucionSerializer(many=True)
+    

@@ -1,5 +1,6 @@
 import logging
 import uuid
+from rest_framework.pagination import PageNumberPagination
 
 from django.db.models import F, Q
 from rest_framework import viewsets, mixins, status
@@ -22,7 +23,12 @@ from config.exceptions import BusinessException
 
 logger = logging.getLogger(__name__)
 
-
+class MovimientoInventarioPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+    
+    
 class MovimientoInventarioViewSet(
     mixins.ListModelMixin,
     viewsets.GenericViewSet,
@@ -39,6 +45,7 @@ class MovimientoInventarioViewSet(
     )
 
     serializer_class = MovimientoInventarioSerializer
+    pagination_class = MovimientoInventarioPagination
     permission_classes = [IsAuthenticated]
 
     # ==========================================================

@@ -1,3 +1,4 @@
+import uuid
 from django.db import transaction
 
 from variantes.models import Variante
@@ -46,8 +47,14 @@ def _validar_precios(
         )
 
 
+def _normalizar_sku(sku):
+    return sku.strip().upper()
+
+
 def _validar_unicidad(
     *,
+    producto=None,
+    nombre=None,
     sku=None,
     codigo_barras=None,
     excluir_pk=None,
@@ -57,10 +64,18 @@ def _validar_unicidad(
     if excluir_pk is not None:
         queryset = queryset.exclude(pk=excluir_pk)
 
-    if (
-        sku is not None
-        and queryset.filter(sku=sku).exists()
-    ):
+    if producto is not None and nombre is not None:
+        if queryset.filter(
+            producto_id=producto.pk,
+            nombre=nombre,
+        ).exists():
+            raise BusinessException(
+                "Ya existe una variante con este nombre para este producto."
+            )
+
+    if sku is not None and queryset.filter(
+        sku__iexact=sku,
+    ).exists():
         raise BusinessException(
             "Ya existe una variante con este SKU."
         )
@@ -74,7 +89,6 @@ def _validar_unicidad(
         raise BusinessException(
             "Ya existe una variante con este código de barras."
         )
-
 
 def _obtener_producto_bloqueado(pk):
     try:
@@ -92,6 +106,13 @@ def _obtener_producto_bloqueado(pk):
 
 def _obtener_variante_bloqueada(pk):
     try:
+        variante_uuid = uuid.UUID(str(pk))
+    except (ValueError, TypeError, AttributeError):
+        raise BusinessException(
+            "El identificador de la variante no es válido."
+        )
+
+    try:
         return (
             Variante.objects
             .select_for_update()
@@ -99,14 +120,12 @@ def _obtener_variante_bloqueada(pk):
                 "producto",
                 "producto__categoria",
             )
-            .get(pk=pk)
+            .get(pk=variante_uuid)
         )
     except Variante.DoesNotExist:
         raise BusinessException(
             "La variante solicitada no existe."
         )
-
-
 # ==============================================================
 # CREAR VARIANTE
 # ==============================================================
@@ -120,7 +139,13 @@ def crear_variante(*, validated_data, usuario):
 
     _validar_producto_activo(producto)
 
+    validated_data["sku"] = _normalizar_sku(
+        validated_data["sku"]
+    )
+
     _validar_unicidad(
+        producto=producto,
+        nombre=validated_data["nombre"],
         sku=validated_data.get("sku"),
         codigo_barras=validated_data.get(
             "codigo_barras"
@@ -223,30 +248,36 @@ def actualizar_variante(
         variante.producto_id
     )
 
-    nuevo_producto = validated_data.get(
-        "producto",
-        producto_actual,
-    )
-
-    if nuevo_producto.pk != producto_actual.pk:
-        nuevo_producto = _obtener_producto_bloqueado(
-            nuevo_producto.pk
-        )
+    if "producto" in validated_data:
+        raise BusinessException(
+            "El producto de una variante no puede modificarse."
+        )   
 
     if variante.activo:
         _validar_producto_activo(
-            nuevo_producto
-        )
+            producto_actual
+    )
+
+    if "sku" in validated_data:
+        validated_data["sku"] = _normalizar_sku(
+            validated_data["sku"]
+    )
 
     _validar_unicidad(
+        producto=producto_actual,
+        nombre=validated_data.get(
+            "nombre",
+            variante.nombre,
+        ),
+        
         sku=validated_data.get(
             "sku",
             variante.sku,
-        ),
+            ),
         codigo_barras=validated_data.get(
             "codigo_barras",
             variante.codigo_barras,
-        ),
+            ),
         excluir_pk=variante.pk,
     )
 
@@ -264,9 +295,6 @@ def actualizar_variante(
             variante.precio_mayoreo,
         ),
     )
-
-    if "producto" in validated_data:
-        validated_data["producto"] = nuevo_producto
 
     for campo, valor in validated_data.items():
         setattr(

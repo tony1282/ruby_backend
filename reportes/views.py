@@ -9,6 +9,8 @@ from rest_framework import status
 
 from django.utils import timezone
 
+from rest_framework.exceptions import NotFound
+
 from usuarios.permissions import IsAdmin
 
 from ventas.models import Venta
@@ -60,9 +62,27 @@ PERMISSION_EMPLEADO = [
 # ============================================================
 
 class ReportePagination(PageNumberPagination):
+
     page_size = 50
+
     page_size_query_param = "page_size"
+
     max_page_size = 200
+
+    def paginate_queryset(self, queryset, request, view=None):
+
+        try:
+            return super().paginate_queryset(
+                queryset,
+                request,
+                view
+            )
+
+        except NotFound:
+
+            raise NotFound(
+                "La página solicitada no es válida."
+            )
 
 
 # ============================================================
@@ -254,6 +274,7 @@ class ReporteVentasView(BaseReporteView):
         estado = request.query_params.get(
             "estado"
         )
+        
 
         # ----------------------------------------------------
         # Validación UUID del usuario
@@ -433,6 +454,10 @@ class ReporteDevolucionesView(BaseReporteView):
         estado = request.query_params.get(
             "estado"
         )
+        
+        tipo = request.query_params.get(
+            "tipo"
+        )
 
         # ----------------------------------------------------
         # Validación estado de devolución
@@ -462,13 +487,32 @@ class ReporteDevolucionesView(BaseReporteView):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+                
+        if tipo:
+            tipos_validos = {
+                valor
+                for valor, _ in Devolucion.TIPO_CHOICES
+            }
+
+            if tipo not in tipos_validos:
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "El tipo de devolución "
+                            "no es válido."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         data = reporte_devoluciones(
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             estado=estado,
+            tipo=tipo,
         )
-
+        
         return self._paginar(
             request,
             data,
@@ -495,6 +539,10 @@ class ReporteGarantiasView(BaseReporteView):
 
         estado = request.query_params.get(
             "estado"
+        )
+        
+        resolucion = request.query_params.get(
+            "resolucion"
         )
 
         # ----------------------------------------------------
@@ -525,12 +573,38 @@ class ReporteGarantiasView(BaseReporteView):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+                
+                
+                    # ----------------------------------------------------
+        # Validación resolución de garantía
+        # ----------------------------------------------------
+
+        if resolucion:
+
+            resoluciones_validas = {
+                valor
+                for valor, _ in Garantia.RESOLUCION_CHOICES
+            }
+
+            if resolucion not in resoluciones_validas:
+
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "La resolución de garantía "
+                            "no es válida."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         data = reporte_garantias(
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             estado=estado,
-        )
+            resolucion=resolucion,
+)
 
         return self._paginar(
             request,

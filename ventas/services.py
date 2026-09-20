@@ -1,7 +1,6 @@
 import uuid
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.db.models import Max
 
@@ -138,6 +137,15 @@ def validar_item_producto(item):
         raise BusinessException(
             "La cantidad debe ser un número entero."
         )
+    
+    if isinstance(
+        cantidad_raw,
+        Decimal,
+    ) and not cantidad_raw == cantidad_raw.to_integral_value():
+        raise BusinessException(
+            "La cantidad debe ser un número entero."
+        )
+    
 
     try:
         cantidad = int(
@@ -471,6 +479,8 @@ def procesar_item_venta(
 # CREAR VENTA
 # ==============================================================
 
+
+    
 @transaction.atomic
 def crear_venta(
     data,
@@ -487,21 +497,25 @@ def crear_venta(
           ↓
         Variante(s)
           ↓
+        Advisory lock de folio
+          ↓
         Venta
           ↓
         DetalleVenta
           ↓
         MovimientoInventario
     """
-
-    # ----------------------------------------------------------
-    # VALIDAR USUARIO
-    # ----------------------------------------------------------
-
+    
     if not usuario.activo:
         raise BusinessException(
             "El usuario está inactivo."
         )
+    
+    if not hasattr(data, "get"):
+        raise BusinessException(
+            "El cuerpo de la venta debe tener un formato válido."
+        )
+
 
     caja_id_raw = data.get(
         "caja_id"
@@ -545,20 +559,24 @@ def crear_venta(
     # ----------------------------------------------------------
 
     items_validados = []
+    variantes_recibidas = set()
 
     for item in productos:
-
-        variante_id, cantidad = (
-            validar_item_producto(item)
-        )
-
+        variante_id, cantidad = validar_item_producto(item)
+        
+        if variante_id in variantes_recibidas:
+            raise BusinessException(
+                "No se pueden repetir variantes en una misma venta."
+            )
+        variantes_recibidas.add(variante_id)
+        
         items_validados.append(
             (
                 variante_id,
                 cantidad,
-            )
         )
-
+    )
+    
     descuento = validar_descuento(
         data.get(
             "descuento",
@@ -601,25 +619,6 @@ def crear_venta(
 
     iva_porcentaje = obtener_iva()
 
-    # ----------------------------------------------------------
-    # LOCK TRANSACCIONAL PARA FOLIOS
-    #
-    # PostgreSQL / Supabase.
-    # ----------------------------------------------------------
-
-    with connection.cursor() as cursor:
-
-        cursor.execute(
-            """
-            SELECT pg_advisory_xact_lock(
-                hashtext('ventas_folio')
-            )
-            """
-        )
-
-    # ----------------------------------------------------------
-    # LOCK 2: CORTE
-    # ----------------------------------------------------------
 
     corte = obtener_corte_abierto(
         caja
@@ -632,10 +631,7 @@ def crear_venta(
     # adquirir locks innecesarios.
     # ----------------------------------------------------------
 
-    if (
-        usuario.rol not in (0, 1)
-        and corte.usuario_id != usuario.id
-    ):
+    if corte.usuario_id != usuario.id:
         raise BusinessException(
             "Esta caja está siendo utilizada por otro empleado."
         )
@@ -679,6 +675,16 @@ def crear_venta(
     ):
         raise BusinessException(
             "Una o más variantes no existen."
+        )
+        
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtext('ventas_folio')
+            )
+            """
         )
 
     # ----------------------------------------------------------
@@ -1030,11 +1036,12 @@ def cancelar_venta(
         estado__in=[
             "PENDIENTE",
             "APROBADA",
+            "FINALIZADA",
         ],
     ).exists():
 
         raise BusinessException(
-            "No se puede cancelar la venta porque tiene una garantía pendiente o aprobada."
+            "No se puede cancelar la venta porque tiene una garantía pendiente, aprobada o finalizada."
         )
 
     # ==========================================================
@@ -1046,7 +1053,6 @@ def cancelar_venta(
 
     detalles = list(
         venta.detalles
-        .select_related("variante")
         .order_by(
             "variante_id",
             "id",
@@ -1057,15 +1063,46 @@ def cancelar_venta(
     # BLOQUEAR Y RESTAURAR VARIANTES
     # ==========================================================
 
-    for detalle in detalles:
-
-        variante = (
-            Variante.objects
-            .select_for_update()
-            .get(
-                id=detalle.variante_id
-            )
+    variante_ids = sorted(
+        {
+            detalle.variante_id
+            for detalle in detalles
+        },
+        key=str,
+    )
+    
+    variantes = list(
+        Variante.objects
+        .select_for_update()
+        .filter(
+            id__in=variante_ids
         )
+        .order_by("id")
+    )
+    
+    variantes_map = {
+        variante.id: variante
+        for variante in variantes
+    }
+    
+    if len(variantes_map) != len(
+        variante_ids
+    ):
+        raise BusinessException(
+            "Una o más variantes no existen."
+        )
+        
+    for detalle in detalles:
+        
+        variante = variantes_map.get(
+            detalle.variante_id
+        )
+        
+        if not variante:
+            raise BusinessException(
+                "La variante de la venta no existe."
+            )
+
 
         stock_anterior = (
             variante.stock

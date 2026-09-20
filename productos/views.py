@@ -167,19 +167,28 @@ class ProductoViewSet(
     # ==========================================================
 
     def get_permissions(self):
-
         if self.action in [
             "list",
             "retrieve",
+            "create",
+            "update",
+            "partial_update",
         ]:
-
             return [
                 IsAuthenticated(),
             ]
 
+        if self.action in [
+            "activar",
+            "desactivar",
+        ]:
+            return [
+                IsAuthenticated(),
+                IsAdmin(),
+            ]
+
         return [
             IsAuthenticated(),
-            IsAdmin(),
         ]
 
     # ==========================================================
@@ -368,19 +377,6 @@ class ProductoViewSet(
                 usuario=request.user,
             )
 
-        except Producto.DoesNotExist:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "No existe el producto "
-                        "solicitado."
-                    ),
-                    "data": None,
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
 
         except BusinessException as exc:
 
@@ -429,19 +425,6 @@ class ProductoViewSet(
                 usuario=request.user,
             )
 
-        except Producto.DoesNotExist:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "No existe el producto "
-                        "solicitado."
-                    ),
-                    "data": None,
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
 
         except BusinessException as exc:
 

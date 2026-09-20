@@ -9,7 +9,23 @@ class EmpresaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Empresa
-        fields = "__all__"
+        fields = [
+            "id",
+            "nombre",
+            "rfc",
+            "direccion",
+            "telefono",
+            "mensaje_ticket",
+            "iva",
+            "dias_devolucion",
+            "fecha_creacion",
+            "fecha_actualizacion",
+        ]
+        read_only_fields = [
+            "id",
+            "fecha_creacion",
+            "fecha_actualizacion",
+        ]
 
     def validate_nombre(self, value):
         value = value.strip()

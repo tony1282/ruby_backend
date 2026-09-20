@@ -31,7 +31,6 @@ class VarianteSerializer(serializers.ModelSerializer):
         error_messages={
             "invalid": "El stock inicial debe ser un número entero.",
             "min_value": "El stock inicial no puede ser negativo.",
-            "required": "El stock inicial es obligatorio.",
         },
     )
     
@@ -86,6 +85,20 @@ class VarianteSerializer(serializers.ModelSerializer):
     # NOMBRE
     # ==========================================================
 
+    def get_fields(self):
+        fields = super().get_fields()
+
+    # ----------------------------------------------------------
+    # En actualización, producto es inmutable y por lo tanto
+    # no debe ser obligatorio enviarlo en PUT.
+    #
+    # En creación permanece obligatorio.
+    # ----------------------------------------------------------
+        if self.instance is not None:
+            fields["producto"].required = False
+
+        return fields
+    
     def validate_nombre(self, value):
         value = value.strip()
 
@@ -101,7 +114,7 @@ class VarianteSerializer(serializers.ModelSerializer):
     # ==========================================================
 
     def validate_sku(self, value):
-        value = value.strip()
+        value = value.strip().upper()
 
         if not value:
             raise serializers.ValidationError(
@@ -117,7 +130,7 @@ class VarianteSerializer(serializers.ModelSerializer):
                 "guiones y guiones bajos."
             )
 
-        queryset = Variante.objects.filter(sku=value)
+        queryset = Variante.objects.filter(sku__iexact=value)
 
         if self.instance is not None:
             queryset = queryset.exclude(pk=self.instance.pk)
@@ -211,6 +224,13 @@ class VarianteSerializer(serializers.ModelSerializer):
                     "El estado activo no puede modificarse "
                     "directamente. Utiliza los endpoints "
                     "activar/desactivar."
+                )
+            })
+        
+        if self.instance is not None and "producto" in self.initial_data:
+            raise serializers.ValidationError({
+                "producto": (
+                    "El producto de una variante no puede modificarse."
                 )
             })
 

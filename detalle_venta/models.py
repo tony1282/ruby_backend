@@ -59,5 +59,13 @@ class DetalleVenta(models.Model):
         ],
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["venta", "variante"],
+                name="detalle_venta_venta_variante_unica",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.venta.folio} - {self.variante.nombre}"

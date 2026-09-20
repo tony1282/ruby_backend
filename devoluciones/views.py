@@ -1,6 +1,5 @@
 import logging
 
-from django.db import transaction
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,19 +9,22 @@ from rest_framework.permissions import IsAuthenticated
 from config.pagination import StandardPagination
 from config.exceptions import BusinessException
 
-from bitacora.services import registrar_bitacora
 
 from .permissions import EsAdministrador
 
 from .serializers import (
+    DevolucionSerializer,
     CrearDevolucionSerializer,
-    DevolucionSerializer
+    ActualizarDevolucionSerializer,
+    VentaParaDevolucionSerializer,
 )
 
 from .services import (
     crear_devolucion,
+    actualizar_devolucion,
     aprobar_devolucion,
-    cambiar_estado_devolucion
+    cambiar_estado_devolucion,
+    obtener_venta_para_devolucion,
 )
 
 from .models import Devolucion
@@ -38,16 +40,24 @@ class DevolucionListCreateView(APIView):
     # GET /api/devoluciones/
 
     def get(self, request):
-        
+
         if request.user.rol in (0, 1):
             devoluciones = Devolucion.objects.all()
         else:
             devoluciones = Devolucion.objects.filter(
                 usuario=request.user
             )
-
-        devoluciones = devoluciones.order_by(
-            "-fecha"
+            
+        devoluciones = (
+            devoluciones.select_related(
+                "venta",
+                "usuario",
+                "metodo_pago_reembolso"
+            )
+            .prefetch_related(
+                "detalles__detalle_venta__variante__producto"
+            )
+            .order_by("-fecha")
         )
 
         paginator = StandardPagination()
@@ -106,7 +116,8 @@ class DevolucionListCreateView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -120,7 +131,8 @@ class DevolucionListCreateView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -143,16 +155,24 @@ class DevolucionDetailView(APIView):
 
         try:
             
+            queryset = Devolucion.objects.select_related(
+                "venta",
+                "usuario",
+                "metodo_pago_reembolso"
+            ).prefetch_related(
+                "detalles__detalle_venta__variante__producto"
+            )
+
             if request.user.rol in (0,1):
-                devolucion = Devolucion.objects.get(
+                devolucion = queryset.get(
                     id=id
                 )
             else:
-                devolucion = Devolucion.objects.get(
+                devolucion = queryset.get(
                     id=id,
                     usuario=request.user
                 )
-                
+
         except Devolucion.DoesNotExist:
 
             return Response(
@@ -160,7 +180,8 @@ class DevolucionDetailView(APIView):
                     "success": False,
                     "message": (
                         "La devolución no existe."
-                    )
+                    ),
+                    "data": None
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
@@ -182,169 +203,27 @@ class DevolucionDetailView(APIView):
     # PUT /api/devoluciones/{id}/
 
     def put(
-        self,
-        request,
-        id
-    ):
+            self,
+            request,
+            id
+        ):
 
-        with transaction.atomic():
+        serializer = ActualizarDevolucionSerializer(
+            data=request.data
+        )
 
-            try:
+        serializer.is_valid(
+            raise_exception=True
+        )
 
-                devolucion = (
-                    Devolucion.objects
-                    .select_for_update()
-                    .get(id=id)
-                )
-
-            except Devolucion.DoesNotExist:
-
-                return Response(
-                    {
-                        "success": False,
-                        "message": (
-                            "La devolución no existe."
-                        )
-                    },
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-
-            if devolucion.estado != "PENDIENTE":
-
-                return Response(
-                    {
-                        "success": False,
-                        "message": (
-                            "Solo se pueden modificar "
-                            "devoluciones pendientes."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-
-            # ====================================================
-            # SOLO EL CREADOR O UN ADMINISTRADOR PUEDEN MODIFICAR
-            # ====================================================
-
-            if (
-                request.user.rol not in (0, 1)
-                and request.user.id != devolucion.usuario_id
-            ):
-
-                return Response(
-                    {
-                        "success": False,
-                        "message": (
-                            "No tienes permisos para "
-                            "modificar esta devolución."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-
-            # Por seguridad no permitimos modificar
-            # venta, detalles ni total directamente.
-
-            campos_permitidos = [
-                "tipo",
-                "motivo",
-                "metodo_pago_reembolso_id"
-            ]
-
-
-            for campo in request.data:
-
-                if campo not in campos_permitidos:
-
-                    return Response(
-                        {
-                            "success": False,
-                            "message": (
-                                f"El campo '{campo}' "
-                                "no puede modificarse."
-                            )
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-
-            if "tipo" in request.data:
-
-                if request.data["tipo"] not in [
-                    "NORMAL",
-                    "DEFECTUOSO",
-                    "GARANTIA",
-                    "EXTRAORDINARIA"
-                ]:
-
-                    return Response(
-                        {
-                            "success": False,
-                            "message": (
-                                "Tipo de devolución no válido."
-                            )
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-                devolucion.tipo = request.data["tipo"]
-
-
-            if "motivo" in request.data:
-
-                devolucion.motivo = request.data[
-                    "motivo"
-                ]
-
-
-            if "metodo_pago_reembolso_id" in request.data:
-
-                from metodos_pago.models import MetodoPago
-
-                try:
-
-                    metodo = MetodoPago.objects.get(
-                        id=request.data[
-                            "metodo_pago_reembolso_id"
-                        ],
-                        activo=True
-                    )
-
-                except MetodoPago.DoesNotExist:
-
-                    return Response(
-                        {
-                            "success": False,
-                            "message": (
-                                "El método de reembolso "
-                                "no existe o está inactivo."
-                            )
-                        },
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-                devolucion.metodo_pago_reembolso = metodo
-
-
-            devolucion.save()
-
-            registrar_bitacora(
-                usuario=request.user,
-                modulo="Devoluciones",
-                accion="MODIFICAR_DEVOLUCION",
-                descripcion=(
-                    f"Devolución {devolucion.id} modificada para la venta "
-                    f"'{devolucion.venta.folio}' por "
-                    f"{request.user.nombre} {request.user.apellido}. "
-                    f"Motivo: {devolucion.motivo}."
-                ),
+        try:
+            devolucion = actualizar_devolucion(
+                id,
+                serializer.validated_data,
+                request.user
             )
 
-
-            serializer = DevolucionSerializer(
+            response = DevolucionSerializer(
                 devolucion
             )
 
@@ -354,9 +233,35 @@ class DevolucionDetailView(APIView):
                     "message": (
                         "Devolución actualizada correctamente."
                     ),
-                    "data": serializer.data
+                    "data": response.data
                 },
                 status=status.HTTP_200_OK
+            )
+
+        except BusinessException as e:
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Error inesperado en actualizar_devolucion"
+            )
+
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "Error interno del servidor."
+                    ),
+                    "data": None
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
 
@@ -403,7 +308,8 @@ class DevolucionAprobarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -417,7 +323,8 @@ class DevolucionAprobarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -467,7 +374,8 @@ class DevolucionRechazarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -481,7 +389,44 @@ class DevolucionRechazarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+            
+class VentaParaDevolucionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, folio):
+        try:
+            data = obtener_venta_para_devolucion(
+                folio=folio,
+                usuario=request.user,
+            )
+
+            serializer = VentaParaDevolucionSerializer(data)
+
+            return Response({
+                "success": True,
+                "message": "Venta consultada correctamente.",
+                "data": serializer.data,
+            }, status=status.HTTP_200_OK)
+
+        except BusinessException as e:
+            return Response({
+                "success": False,
+                "message": str(e),
+                "data": None,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Error inesperado en obtener_venta_para_devolucion"
+                )
+            
+            return Response({
+                "success": False,
+                "message": "Error interno del servidor.",
+                "data": None,
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

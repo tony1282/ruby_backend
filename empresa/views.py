@@ -5,11 +5,16 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Empresa
 from .serializers import EmpresaSerializer
+from .services import (
+    obtener_empresa,
+    crear_empresa,
+    actualizar_empresa,
+    EmpresaNoExiste,
+    EmpresaYaExiste,
+)
 
 from usuarios.permissions import IsAdmin
-from bitacora.services import registrar_bitacora
 
 
 logger = logging.getLogger(__name__)
@@ -29,40 +34,31 @@ class EmpresaView(APIView):
 
     def get(self, request):
 
-        empresa = Empresa.objects.first()
+        try:
 
-        if not empresa:
+            empresa = obtener_empresa()
+
+        except EmpresaNoExiste as e:
+
             return Response(
                 {
                     "success": False,
-                    "message": "No hay configuración de empresa registrada.",
+                    "message": str(e),
                     "data": None
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = EmpresaSerializer(empresa)
-
         return Response(
             {
                 "success": True,
                 "message": "Configuración de empresa obtenida correctamente.",
-                "data": serializer.data
+                "data": EmpresaSerializer(empresa).data
             },
             status=status.HTTP_200_OK
         )
 
     def post(self, request):
-
-        if Empresa.objects.exists():
-            return Response(
-                {
-                    "success": False,
-                    "message": "Ya existe una configuración de empresa. Use PUT para actualizar.",
-                    "data": None
-                },
-                status=status.HTTP_409_CONFLICT
-            )
 
         serializer = EmpresaSerializer(
             data=request.data
@@ -81,16 +77,24 @@ class EmpresaView(APIView):
 
         try:
 
-            empresa = serializer.save()
-
-            registrar_bitacora(
+            empresa = crear_empresa(
                 usuario=request.user,
-                modulo="Empresa",
-                accion="CREAR_EMPRESA",
-                descripcion="Se creó la configuración de la empresa."
+                datos=serializer.validated_data
+            )
+
+        except EmpresaYaExiste as e:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status=status.HTTP_409_CONFLICT
             )
 
         except Exception:
+
             logger.exception(
                 "Error al crear configuración de empresa."
             )
@@ -115,20 +119,7 @@ class EmpresaView(APIView):
 
     def put(self, request):
 
-        empresa = Empresa.objects.first()
-
-        if not empresa:
-            return Response(
-                {
-                    "success": False,
-                    "message": "No hay configuración de empresa registrada.",
-                    "data": None
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
         serializer = EmpresaSerializer(
-            empresa,
             data=request.data,
             partial=True
         )
@@ -146,16 +137,24 @@ class EmpresaView(APIView):
 
         try:
 
-            empresa = serializer.save()
-
-            registrar_bitacora(
+            empresa = actualizar_empresa(
                 usuario=request.user,
-                modulo="Empresa",
-                accion="ACTUALIZAR_EMPRESA",
-                descripcion="Se actualizó la configuración de la empresa."
+                datos=serializer.validated_data
+            )
+
+        except EmpresaNoExiste as e:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status=status.HTTP_404_NOT_FOUND
             )
 
         except Exception:
+
             logger.exception(
                 "Error al actualizar configuración de empresa."
             )

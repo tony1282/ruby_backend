@@ -7,9 +7,17 @@ from django.db import IntegrityError, transaction
 from usuarios.permissions import IsAdmin
 
 from .models import Caja
-from .serializers import CajaSerializer
-
+from .serializers import (
+    CajaSerializer,
+    CajaOperativaSerializer
+)
 from bitacora.services import registrar_bitacora
+from corte_caja.models import CorteCaja
+
+from django.db.models import (
+    OuterRef,
+    Subquery,
+)
 
 
 class CajaViewSet(
@@ -195,18 +203,56 @@ class CajaViewSet(
         detail=False,
         methods=["get"]
     )
-    def activas(self, request):
-
-        cajas = Caja.objects.filter(
-            activa=True
-        ).order_by(
-            "nombre",
-            "id"
+    
+    def activas(
+        self,
+        request
+    ):
+        corte_abierto = (
+            CorteCaja.objects
+            .filter(
+                caja_id=OuterRef("pk"),
+                fecha_fin__isnull=True
+            )
+            .order_by(
+                "-fecha_inicio"
+            )
         )
 
-        serializer = self.get_serializer(
+        cajas = (
+            Caja.objects
+            .filter(
+                activa=True
+            )
+        
+            .annotate(
+                _corte_abierto_id=Subquery(
+                    corte_abierto
+                    .values("id")[:1]
+                ),
+            
+                _corte_usuario_id=Subquery(
+                    corte_abierto
+                    .values("usuario_id")[:1]
+                ),
+                _corte_usuario_nombre=Subquery(
+                    corte_abierto
+                    .values(
+                        "usuario__nombre")[:1]
+                    ),
+                )
+            .order_by(
+                "nombre",
+                "id"
+            )
+        )
+
+        serializer = CajaOperativaSerializer(
             cajas,
-            many=True
+            many=True,
+            context={
+                "request": request
+            }
         )
 
         return Response(
@@ -282,7 +328,12 @@ class CajaViewSet(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if caja.estado == Caja.ESTADO_ABIERTA:
+        corte_abierto = CorteCaja.objects.filter(
+            caja=caja,
+            fecha_fin__isnull=True
+        ).exists()
+
+        if corte_abierto:
 
             return Response(
                 {

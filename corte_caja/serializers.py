@@ -1,8 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-
-from django.db.models import Sum, Count
+from django.db.models import Sum
 
 from ventas.models import Venta
 
@@ -85,17 +84,25 @@ class CorteCajaSerializer(
 
         return value
 
-    # --------------------------------------------------------
-    # Estados de venta que representan ingreso válido para el
-    # corte: una venta COMPLETADA o DEVUELTA sí generó (o sigue
-    # representando) un cobro real; el reembolso de una
-    # devolución se resta aparte (ver total_reembolsos /
-    # efectivo_esperado_actual), así que no hay doble conteo.
-    # CANCELADA queda excluida explícitamente.
-    # --------------------------------------------------------
-    ESTADOS_VENTA_VALIDA = ["COMPLETADA", "DEVUELTA"]
+    ESTADOS_VENTA_VALIDA = [
+        "COMPLETADA",
+        "DEVUELTA"
+    ]
 
-    def get_total_ventas(self, obj):
+    def get_total_ventas(
+        self,
+        obj
+    ):
+
+        if hasattr(
+            obj,
+            "_total_ventas"
+        ):
+
+            return (
+                obj._total_ventas
+                or Decimal("0.00")
+            )
 
         resultado = (
             Venta.objects
@@ -103,12 +110,27 @@ class CorteCajaSerializer(
                 corte_caja=obj,
                 estado__in=self.ESTADOS_VENTA_VALIDA
             )
-            .aggregate(total=Sum("total"))["total"]
+            .aggregate(
+                total=Sum("total")
+            )["total"]
         )
 
-        return resultado or Decimal("0.00")
+        return (
+            resultado
+            or Decimal("0.00")
+        )
 
-    def get_numero_ventas(self, obj):
+    def get_numero_ventas(
+        self,
+        obj
+    ):
+
+        if hasattr(
+            obj,
+            "_numero_ventas"
+        ):
+
+            return obj._numero_ventas
 
         return (
             Venta.objects
@@ -119,7 +141,20 @@ class CorteCajaSerializer(
             .count()
         )
 
-    def get_total_reembolsos(self, obj):
+    def get_total_reembolsos(
+        self,
+        obj
+    ):
+
+        if hasattr(
+            obj,
+            "_total_reembolsos"
+        ):
+
+            return (
+                obj._total_reembolsos
+                or Decimal("0.00")
+            )
 
         resultado = (
             MovimientoCaja.objects
@@ -127,12 +162,47 @@ class CorteCajaSerializer(
                 corte_caja=obj,
                 tipo="REEMBOLSO"
             )
-            .aggregate(total=Sum("monto"))["total"]
+            .aggregate(
+                total=Sum("monto")
+            )["total"]
         )
 
-        return resultado or Decimal("0.00")
+        return (
+            resultado
+            or Decimal("0.00")
+        )
 
-    def get_efectivo_esperado_actual(self, obj):
+    def get_efectivo_esperado_actual(
+        self,
+        obj
+    ):
+
+        if (
+            hasattr(
+                obj,
+                "_total_efectivo_ventas"
+            )
+            and hasattr(
+                obj,
+                "_total_reembolsos_efectivo"
+            )
+        ):
+
+            total_efectivo = (
+                obj._total_efectivo_ventas
+                or Decimal("0.00")
+            )
+
+            total_reembolsos_efectivo = (
+                obj._total_reembolsos_efectivo
+                or Decimal("0.00")
+            )
+
+            return (
+                obj.efectivo_inicial
+                + total_efectivo
+                - total_reembolsos_efectivo
+            )
 
         total_efectivo = (
             Venta.objects
@@ -141,7 +211,9 @@ class CorteCajaSerializer(
                 estado__in=self.ESTADOS_VENTA_VALIDA,
                 metodo_pago__nombre="EFECTIVO"
             )
-            .aggregate(total=Sum("total"))["total"]
+            .aggregate(
+                total=Sum("total")
+            )["total"]
             or Decimal("0.00")
         )
 
@@ -152,7 +224,9 @@ class CorteCajaSerializer(
                 tipo="REEMBOLSO",
                 metodo_pago__nombre="EFECTIVO"
             )
-            .aggregate(total=Sum("monto"))["total"]
+            .aggregate(
+                total=Sum("monto")
+            )["total"]
             or Decimal("0.00")
         )
 

@@ -1,6 +1,5 @@
 import re
 
-from django.db import IntegrityError
 
 from rest_framework import serializers
 
@@ -162,7 +161,10 @@ class UsuarioSerializer(
     )
 
     email = serializers.EmailField(
-        max_length=150
+        max_length=150,
+        error_messages={
+            "invalid": "El correo electrónico no es válido."
+        }
     )
 
     class Meta:
@@ -181,7 +183,6 @@ class UsuarioSerializer(
 
             "password": {
                 "write_only": True,
-                "min_length": 8
             }
 
         }
@@ -224,36 +225,6 @@ class UsuarioSerializer(
         )
 
 
-    def update(
-        self,
-        instance,
-        validated_data
-    ):
-
-        password = validated_data.pop(
-            "password",
-            None
-        )
-
-        if password:
-
-            instance.set_password(
-                password
-            )
-
-        for attr, value in validated_data.items():
-
-            setattr(
-                instance,
-                attr,
-                value
-            )
-
-        instance.save()
-
-        return instance
-
-
 class CrearAdminSerializer(
     ValidacionesUsuarioMixin,
     serializers.ModelSerializer
@@ -264,7 +235,10 @@ class CrearAdminSerializer(
     )
 
     email = serializers.EmailField(
-        max_length=150
+        max_length=150,
+        error_messages={
+            "invalid": "El correo electrónico no es válido."
+        }
     )
 
     class Meta:
@@ -283,7 +257,6 @@ class CrearAdminSerializer(
 
             "password": {
                 "write_only": True,
-                "min_length": 8
             }
 
         }

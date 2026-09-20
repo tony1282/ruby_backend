@@ -18,6 +18,41 @@ class CrearGarantiaSerializer(serializers.Serializer):
     motivo = serializers.CharField(
         allow_blank=False
     )
+    
+class ActualizarGarantiaSerializer(serializers.Serializer):
+
+    motivo = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        trim_whitespace=True,
+        error_messages={
+            "required": "El campo 'motivo' es obligatorio.",
+            "blank": "El motivo no puede estar vacío.",
+        }
+    )
+
+    def to_internal_value(self, data):
+
+        campos_permitidos = {"motivo"}
+        campos_enviados = set(data.keys())
+
+        campos_no_permitidos = (
+            campos_enviados - campos_permitidos
+        )
+
+        if campos_no_permitidos:
+
+            campo = next(
+                iter(campos_no_permitidos)
+            )
+
+            raise serializers.ValidationError({
+                "non_field_errors": [
+                    f"El campo '{campo}' no puede modificarse."
+                ]
+            })
+
+        return super().to_internal_value(data)
 
 
 class AprobarGarantiaSerializer(serializers.Serializer):

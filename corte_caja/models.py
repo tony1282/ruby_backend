@@ -55,18 +55,44 @@ class CorteCaja(models.Model):
     )
 
     class Meta:
-
         indexes = [
-            models.Index(fields=["caja"]),
-            models.Index(fields=["usuario"]),
-            models.Index(fields=["fecha_inicio"]),
-            models.Index(fields=["fecha_fin"]),
+            models.Index(
+                fields=["fecha_inicio"],
+                name="corte_fecha_inicio_idx"
+            ),
+            models.Index(
+                fields=["caja", "fecha_fin"],
+                name="corte_caja_fecha_fin_idx"
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["caja"],
+                condition=models.Q(
+                    fecha_fin__isnull=True
+                ),
+                name="corte_caja_unico_abierto",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    efectivo_inicial__gte=0
+                ),
+                name="corte_efectivo_inicial_no_negativo",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(efectivo_final__gte=0)
+                    | models.Q(efectivo_final__isnull=True)
+                ),
+                name="corte_efectivo_final_no_negativo",
+            ),
         ]
 
     def __str__(self):
-
         return f"Corte {self.id}"
-
+    
+    
+    
 
 class MovimientoCaja(models.Model):
 
@@ -126,14 +152,24 @@ class MovimientoCaja(models.Model):
     )
 
     class Meta:
-
         indexes = [
-            models.Index(fields=["corte_caja"]),
-            models.Index(fields=["metodo_pago"]),
-            models.Index(fields=["tipo"]),
-            models.Index(fields=["fecha"]),
+            models.Index(
+                fields=["fecha"],
+                name="mov_caja_fecha_idx"
+            ),
+            models.Index(
+                fields=["corte_caja", "tipo"],
+                name="mov_caja_corte_tipo_idx"
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    monto__gte=0
+                ),
+                name="mov_caja_monto_no_negativo",
+            ),
         ]
 
     def __str__(self):
-
         return f"{self.tipo} - ${self.monto}"

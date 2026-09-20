@@ -14,6 +14,7 @@ from bitacora.services import registrar_bitacora
 from .models import Garantia
 from .serializers import (
     CrearGarantiaSerializer,
+    ActualizarGarantiaSerializer,
     AprobarGarantiaSerializer,
     RechazarGarantiaSerializer,
     FinalizarGarantiaSerializer,
@@ -21,6 +22,7 @@ from .serializers import (
 )
 from .services import (
     crear_garantia,
+    actualizar_garantia,
     aprobar_garantia,
     rechazar_garantia,
     finalizar_garantia,
@@ -40,7 +42,7 @@ class GarantiaListCreateView(APIView):
 
     # GET /api/garantias/
     def get(self, request):
-        
+
         if request.user.rol in (0, 1):
             garantias = Garantia.objects.select_related(
                 "venta",
@@ -53,7 +55,7 @@ class GarantiaListCreateView(APIView):
 
         else:
             garantias = Garantia.objects.select_related(
-                 "venta",
+                "venta",
                 "detalle_venta",
                 "variante",
                 "variante__producto",
@@ -62,7 +64,6 @@ class GarantiaListCreateView(APIView):
             ).filter(
                 usuario=request.user
             )
-        
 
         paginator = GarantiaPagination()
 
@@ -112,7 +113,8 @@ class GarantiaListCreateView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -126,7 +128,8 @@ class GarantiaListCreateView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -149,23 +152,25 @@ class GarantiaDetailView(APIView):
                 "usuario",
                 "variante_nueva"
             )
-            
+
             if request.user.rol in (0, 1):
                 garantia = queryset.get(
                     id=id
                 )
+
             else:
                 garantia = queryset.get(
                     id=id,
                     usuario=request.user
-                )    
+                )
 
         except Garantia.DoesNotExist:
 
             return Response(
                 {
                     "success": False,
-                    "message": "La garantía no existe."
+                    "message": "La garantía no existe.",
+                    "data": None
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
@@ -173,6 +178,7 @@ class GarantiaDetailView(APIView):
         return Response(
             {
                 "success": True,
+                "message": "Garantía obtenida correctamente.",
                 "data": GarantiaSerializer(garantia).data
             },
             status=status.HTTP_200_OK
@@ -180,157 +186,80 @@ class GarantiaDetailView(APIView):
 
     # PUT /api/garantias/<id>/
     def put(self, request, id):
-
-        try:
-
-            garantia = Garantia.objects.get(
-                id=id
-            )
-
-        except Garantia.DoesNotExist:
-
+        if not request.user.activo:
             return Response(
                 {
                     "success": False,
-                    "message": "La garantía no existe."
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # Solo se pueden modificar garantías pendientes
-        if garantia.estado != "PENDIENTE":
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "Solo se pueden modificar "
-                        "garantías pendientes."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ========================================================
-        # Solo el usuario que creó la garantía puede modificarla
-        # ========================================================
-
-        if request.user.id != garantia.usuario_id:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "No tienes permisos para "
-                        "modificar esta garantía."
-                    )
+                    "message": "El usuario no está activo.",
+                    "data": None
                 },
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # ========================================================
-        # Solo se permite modificar el motivo
-        # ========================================================
-
-        campos_permitidos = {
-            "motivo"
-        }
-
-        campos_recibidos = set(
-            request.data.keys()
+        serializer = ActualizarGarantiaSerializer(
+            data=request.data
         )
 
-        campos_no_permitidos = (
-            campos_recibidos - campos_permitidos
+        serializer.is_valid(
+            raise_exception=True
         )
 
-        if campos_no_permitidos:
+        try:
+            garantia = actualizar_garantia(
+                id,
+                serializer.validated_data,
+                request.user
+            )
 
-            campo = next(
-                iter(campos_no_permitidos)
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        "Garantía actualizada correctamente."
+                    ),
+                    "data": GarantiaSerializer(
+                        garantia
+                    ).data
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except BusinessException as e:
+            if str(e) == "La garantía no existe.":
+                codigo = status.HTTP_404_NOT_FOUND
+
+            elif str(e) == (
+                "No tienes permisos para modificar esta garantía."
+            ):
+                codigo = status.HTTP_403_FORBIDDEN
+
+            else:
+                codigo = status.HTTP_400_BAD_REQUEST
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status=codigo
+            )
+
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Error inesperado en actualizar_garantia"
             )
 
             return Response(
                 {
                     "success": False,
-                    "message": (
-                        f"El campo '{campo}' "
-                        "no puede modificarse."
-                    )
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        # ========================================================
-        # Validar motivo
-        # ========================================================
-
-        if "motivo" not in request.data:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "El campo 'motivo' "
-                        "es obligatorio."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        motivo = request.data["motivo"]
-
-        if not isinstance(motivo, str) or not motivo.strip():
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "El motivo no puede estar vacío."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ========================================================
-        # Actualizar
-        # ========================================================
-
-        garantia.motivo = motivo.strip()
-
-        garantia.save(
-            update_fields=[
-                "motivo",
-                "fecha_actualizacion"
-            ]
-        )
-
-        registrar_bitacora(
-            usuario=request.user,
-            modulo="Garantias",
-            accion="MODIFICAR_GARANTIA",
-            descripcion=(
-                f"Garantía {garantia.id} modificada para la venta "
-                f"'{garantia.venta.folio}' por "
-                f"{request.user.nombre} {request.user.apellido}. "
-                f"Motivo actualizado: {garantia.motivo}."
-            ),
-        )
-
-        return Response(
-            {
-                "success": True,
-                "message": (
-                    "Garantía actualizada correctamente."
-                ),
-                "data": GarantiaSerializer(
-                    garantia
-                ).data
-            },
-            status=status.HTTP_200_OK
-        )
-
-
+        
+        
 class GarantiaAprobarView(APIView):
 
     permission_classes = [IsAdmin]
@@ -368,15 +297,20 @@ class GarantiaAprobarView(APIView):
             )
 
         except BusinessException as e:
-
+            if str(e) == "La garantía no existe.":
+                codigo = status.HTTP_404_NOT_FOUND
+            else:
+                codigo = status.HTTP_400_BAD_REQUEST
+            
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=codigo
             )
-
+        
         except Exception:
 
             logging.getLogger(__name__).exception(
@@ -386,7 +320,8 @@ class GarantiaAprobarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -429,14 +364,18 @@ class GarantiaRechazarView(APIView):
             )
 
         except BusinessException as e:
-
+            if str(e) == "La garantía no existe.":
+                codigo = status.HTTP_404_NOT_FOUND
+            else:
+                codigo = status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
-                status=status.HTTP_400_BAD_REQUEST
-            )
+                status=codigo
+            ) 
 
         except Exception:
 
@@ -447,7 +386,8 @@ class GarantiaRechazarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
@@ -490,13 +430,17 @@ class GarantiaFinalizarView(APIView):
             )
 
         except BusinessException as e:
-
+            if str(e) == "La garantía no existe.":
+                codigo = status.HTTP_404_NOT_FOUND
+            else:
+                codigo = status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "success": False,
-                    "message": str(e)
+                    "message": str(e),
+                    "data": None
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=codigo
             )
 
         except Exception:
@@ -508,7 +452,8 @@ class GarantiaFinalizarView(APIView):
             return Response(
                 {
                     "success": False,
-                    "message": "Error interno del servidor."
+                    "message": "Error interno del servidor.",
+                    "data": None
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

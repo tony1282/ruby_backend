@@ -39,12 +39,12 @@ DEBUG = os.getenv("DEBUG") == "True"
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    "receivers-avon-answers-everywhere.trycloudflare.com",
+    "certainly-flags-prefix-wealth.trycloudflare.com",
 ]
 
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://receivers-avon-answers-everywhere.trycloudflare.com",
+    "https://certainly-flags-prefix-wealth.trycloudflare.com",
 ]
 
 # En producción cambiar a False y listar solo los orígenes permitidos.

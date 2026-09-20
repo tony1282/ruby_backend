@@ -7,14 +7,15 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
-from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView
 )
+
+from .throttles import LoginRateThrottle
+
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework.exceptions import ValidationError
 
 from .models import Usuario
 
@@ -43,6 +44,11 @@ from .services import (
 
 from config.exceptions import BusinessException
 
+from rest_framework.exceptions import (
+    ValidationError,
+    NotFound
+)
+
 
 class UsuarioViewSet(viewsets.ModelViewSet):
 
@@ -59,7 +65,6 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         "get",
         "post",
         "put",
-        "patch",
         "head",
         "options"
     ]
@@ -105,7 +110,15 @@ class UsuarioViewSet(viewsets.ModelViewSet):
                 "id": "El ID debe ser un UUID válido."
             })
 
-        return super().get_object()
+        try:
+            
+            return super().get_object()
+        
+        except NotFound:
+            raise BusinessException(
+                "Usuario no encontrado."
+            )
+
 
     def get_serializer_class(self):
 
@@ -233,11 +246,17 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             raise_exception=True
         )
 
-        usuario = modificar_usuario(
-            usuario,
-            serializer.validated_data,
-            request.user
-        )
+        try:
+            usuario = modificar_usuario(
+                usuario,
+                serializer.validated_data,
+                request.user
+            )
+
+        except IntegrityError:
+            raise BusinessException(
+                "El usuario o correo ya existe."
+            )
 
         return Response(
             {
@@ -327,15 +346,9 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         )
 
 
-class LoginView(
-    TokenObtainPairView
-):
-
+class LoginView(TokenObtainPairView):
     serializer_class = LoginSerializer
-
-    throttle_classes = [
-        AnonRateThrottle
-    ]
+    throttle_classes = [LoginRateThrottle]
 
 
 class LogoutView(
@@ -372,7 +385,16 @@ class LogoutView(
                 refresh_token
             )
 
-            token.blacklist()
+            if str(token.get("user_id")) != str(request.user.id):
+                return Response(
+                    {
+                        "success": False,
+                        "message": "El refresh token no corresponde al usuario autenticado.",
+                        "data": None
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            token.blacklist()    
 
         except TokenError:
 

@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime
-
+from datetime import datetime, time, timedelta
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -12,10 +12,10 @@ from .serializers import BitacoraSerializer
 
 
 class BitacoraPagination(PageNumberPagination):
-
     page_size = 50
     page_size_query_param = "page_size"
     max_page_size = 200
+    invalid_page_message = "La página solicitada no es válida."
 
 
 class BitacoraView(APIView):
@@ -176,19 +176,28 @@ class BitacoraView(APIView):
         # ------------------------------------------------------
 
         if fecha_desde_obj:
+            fecha_desde_datetime = timezone.make_aware(
+                datetime.combine(
+                    fecha_desde_obj,
+                    time.min
+            )
+        )
 
             registros = registros.filter(
-                fecha__date__gte=fecha_desde_obj
+                fecha__gte=fecha_desde_datetime
             )
 
-        # ------------------------------------------------------
-        # APLICAR fecha_hasta
-        # ------------------------------------------------------
 
         if fecha_hasta_obj:
+            fecha_hasta_datetime = timezone.make_aware(
+                datetime.combine(
+                    fecha_hasta_obj + timedelta(days=1),
+                    time.min
+            )
+        )
 
             registros = registros.filter(
-                fecha__date__lte=fecha_hasta_obj
+                fecha__lt=fecha_hasta_datetime
             )
 
         # ------------------------------------------------------

@@ -1,3 +1,4 @@
+import uuid
 from django.db import transaction
 
 from productos.models import Producto
@@ -32,17 +33,23 @@ def _obtener_categoria_bloqueada(pk):
 
 def _obtener_producto_bloqueado(pk):
     try:
+        producto_uuid = uuid.UUID(str(pk))
+    except (ValueError, TypeError, AttributeError):
+        raise BusinessException(
+            "El identificador del producto no es válido."
+        )
+
+    try:
         return (
             Producto.objects
             .select_for_update()
             .select_related("categoria")
-            .get(pk=pk)
+            .get(pk=producto_uuid)
         )
     except Producto.DoesNotExist:
         raise BusinessException(
             "El producto solicitado no existe."
         )
-
 
 def _validar_categoria_activa(categoria):
     if not categoria.activo:

@@ -3,6 +3,7 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from cajas.models import Caja
 
 from ventas.models import Venta
 from detalle_venta.models import DetalleVenta
@@ -64,10 +65,18 @@ def _validar_vigencia(venta, variante):
         )
 
 
-def _validar_disponibilidad(detalle_venta, cantidad):
+def _validar_disponibilidad(detalle_venta, cantidad, garantia_id=None):
+    
+    garantias = Garantia.objects.filter(
+        detalle_venta=detalle_venta,
+        estado__in=["PENDIENTE", "APROBADA", "FINALIZADA"]
+    )
+    
+    if garantia_id:
+        garantias = garantias.exclude(id=garantia_id)
+    
     cantidad_garantizada = (
-        Garantia.objects
-        .filter(detalle_venta=detalle_venta, estado__in=["PENDIENTE", "APROBADA"])
+        garantias
         .aggregate(total=Sum("cantidad"))["total"] or 0
     )
     cantidad_devuelta = (
@@ -339,12 +348,57 @@ def _aprobar_cambio_producto(
 
     garantia.variante_nueva = variante_nueva
 
+
+def _aprobar_reparacion(garantia, cantidad, usuario):
+    variante = Variante.objects.select_for_update().get(id=garantia.variante_id)
+
+    if not variante.activo:
+        raise BusinessException(
+            "No se puede realizar la reparación porque la variante original está inactiva."
+        )
+
+    if not variante.producto.activo:
+        raise BusinessException(
+            "No se puede realizar la reparación porque el producto original está inactivo."
+        )
+
+    # Recibir producto defectuoso.
+    # No entra al stock vendible.
+    stock_ant = variante.stock
+    stock_def_ant = variante.stock_defectuoso
+    stock_def_nuevo = stock_def_ant + cantidad
+
+    variante.stock_defectuoso = stock_def_nuevo
+    variante.save(
+        update_fields=[
+            "stock",
+            "stock_defectuoso",
+            "fecha_actualizacion",
+        ]
+    )
+
+    _crear_movimiento(
+        variante,
+        "GARANTIA",
+        stock_ant,
+        cantidad,
+        stock_ant,
+        stock_def_ant,
+        stock_def_nuevo,
+        f"Reparación por garantía {garantia.id} - entrada producto defectuoso",
+        usuario,
+    )
+    
+    
 # ============================================================
 # CREAR GARANTÍA
 # ============================================================
 
 @transaction.atomic
 def crear_garantia(data, usuario):
+    if not usuario.activo:
+        raise BusinessException("El usuario no está activo.")
+    
     venta = _validar_venta(data["venta_id"], usuario)
     detalle_venta, variante = _validar_detalle_variante(venta, data)
 
@@ -381,11 +435,75 @@ def crear_garantia(data, usuario):
 
 
 # ============================================================
+# ACTUALIZAR GARANTÍA
+# ============================================================
+
+@transaction.atomic
+def actualizar_garantia(garantia_id, data, usuario):
+
+    if not usuario.activo:
+        raise BusinessException(
+            "El usuario no está activo."
+        )
+
+    try:
+        garantia = (
+            Garantia.objects
+            .select_for_update()
+            .get(id=garantia_id)
+        )
+    except Garantia.DoesNotExist:
+        raise BusinessException(
+            "La garantía no existe."
+        )
+
+    if garantia.estado != "PENDIENTE":
+        raise BusinessException(
+            "Solo se pueden modificar "
+            "garantías pendientes."
+        )
+
+    if usuario.id != garantia.usuario_id:
+        raise BusinessException(
+            "No tienes permisos para "
+            "modificar esta garantía."
+        )
+
+    motivo = data["motivo"]
+
+    garantia.motivo = motivo
+
+    garantia.save(
+        update_fields=[
+            "motivo",
+            "fecha_actualizacion"
+        ]
+    )
+
+    registrar_bitacora(
+        usuario=usuario,
+        modulo="Garantias",
+        accion="MODIFICAR_GARANTIA",
+        descripcion=(
+            f"Garantía {garantia.id} modificada para la venta "
+            f"'{garantia.venta.folio}' por "
+            f"{usuario.nombre} {usuario.apellido}. "
+            f"Motivo actualizado: {garantia.motivo}."
+        ),
+    )
+
+    return garantia
+
+# ============================================================
 # APROBAR GARANTÍA
 # ============================================================
 
 @transaction.atomic
 def aprobar_garantia(garantia_id, data, usuario):
+    
+    if not usuario.activo:
+        raise BusinessException("El usuario no está activo.")
+    
     # ========================================================
     # OBTENER GARANTÍA SIN BLOQUEAR
     # ========================================================
@@ -399,13 +517,44 @@ def aprobar_garantia(garantia_id, data, usuario):
         raise BusinessException(
             "La garantía no existe."
         )
+        
+    # ========================================================
+    # OBTENER VENTA SIN BLOQUEAR
+    # ========================================================
+    
+    try:
+        venta_base = (
+            Venta.objects
+            .select_related("corte_caja")
+            .get(id=garantia_base.venta_id)
+        )
+    except Venta.DoesNotExist:
+        raise BusinessException(
+            "La venta asociada no existe."
+        )
+    if not venta_base.corte_caja:
+        raise BusinessException("La venta no tiene un corte de caja asociado.")
+    
+    caja_id = venta_base.corte_caja.caja_id
 
     # ========================================================
-    # LOCK 1: VENTA
+    # LOCK 1: CAJA
+    # ========================================================
+    
+    try:
+        Caja.objects.select_for_update().get(
+            id=caja_id
+        )
+    except Caja.DoesNotExist:
+        raise BusinessException("La caja asociada a la venta no existe.")
+    
+    
+    # ========================================================
+    # LOCK 2: VENTA
     # ========================================================
 
     try:
-        venta = (
+        venta= (
             Venta.objects
             .select_for_update()
             .get(id=garantia_base.venta_id)
@@ -428,7 +577,7 @@ def aprobar_garantia(garantia_id, data, usuario):
         )
 
     # ========================================================
-    # LOCK 2: GARANTÍA
+    # LOCK 3: GARANTÍA
     # ========================================================
 
     try:
@@ -451,7 +600,7 @@ def aprobar_garantia(garantia_id, data, usuario):
     resolucion = data["resolucion"]
 
     # ========================================================
-    # LOCK 3: DETALLE DE VENTA
+    # LOCK 4: DETALLE DE VENTA
     # ========================================================
 
     try:
@@ -484,7 +633,8 @@ def aprobar_garantia(garantia_id, data, usuario):
 
     _validar_disponibilidad(
         detalle_venta,
-        cantidad
+        cantidad,
+        garantia_id=garantia.id,
     )
 
     # ========================================================
@@ -509,8 +659,7 @@ def aprobar_garantia(garantia_id, data, usuario):
         )
 
     elif resolucion == "REPARACION":
-
-        pass
+        _aprobar_reparacion(garantia, cantidad, usuario)
 
     # ========================================================
     # ACTUALIZAR GARANTÍA
@@ -558,6 +707,11 @@ def aprobar_garantia(garantia_id, data, usuario):
 
 @transaction.atomic
 def rechazar_garantia(garantia_id, data, usuario):
+    
+    if not usuario.activo:
+        raise BusinessException("El usuario no está activo.")
+
+
     try:
         garantia = Garantia.objects.select_for_update().get(id=garantia_id)
     except Garantia.DoesNotExist:
@@ -590,6 +744,8 @@ def rechazar_garantia(garantia_id, data, usuario):
 
 @transaction.atomic
 def finalizar_garantia(garantia_id, data, usuario):
+    if not usuario.activo:
+        raise BusinessException("El usuario no está activo.")
     try:
         garantia = Garantia.objects.select_for_update().get(id=garantia_id)
     except Garantia.DoesNotExist:

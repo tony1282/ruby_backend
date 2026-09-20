@@ -5,24 +5,22 @@ from rest_framework.permissions import IsAuthenticated
 
 from usuarios.permissions import IsAdmin
 
-from .models import MetodoPago
+from config.exceptions import BusinessException
+
 from .serializers import MetodoPagoSerializer
+from .services import (
+    listar_metodos_pago,
+    listar_metodos_pago_activos,
+    activar_metodo_pago,
+    desactivar_metodo_pago,
+)
 
 
 class MetodoPagoView(APIView):
 
-    def get_permissions(self):
-
-        if self.request.method == "GET":
-
-            return [
-                IsAuthenticated()
-            ]
-
-        return [
-            IsAuthenticated(),
-            IsAdmin()
-        ]
+    permission_classes = [
+        IsAuthenticated
+    ]
 
 
     # GET /api/metodos-pago/
@@ -30,7 +28,7 @@ class MetodoPagoView(APIView):
 
     def get(self, request):
 
-        metodos = MetodoPago.objects.all()
+        metodos = listar_metodos_pago()
 
         serializer = MetodoPagoSerializer(
             metodos,
@@ -51,6 +49,26 @@ class MetodoPagoView(APIView):
 
     def post(self, request):
 
+        if not request.user.is_authenticated:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Autenticación requerida."
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not request.user.rol == 1:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "No tienes permisos para realizar esta acción."
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         return Response(
             {
                 "success": False,
@@ -63,85 +81,58 @@ class MetodoPagoView(APIView):
         )
 
 
-    # PUT /api/metodos-pago/{id}/
-    # Solamente permite activar/desactivar
+class MetodoPagoActivarView(APIView):
 
-    def put(self, request, id):
-
-        try:
-
-            metodo = MetodoPago.objects.get(
-                id=id
-            )
-
-        except MetodoPago.DoesNotExist:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "Método de pago no encontrado."
-                    )
-                },
-                status=status.HTTP_404_NOT_FOUND
-            )
+    permission_classes = [
+        IsAuthenticated,
+        IsAdmin
+    ]
 
 
-        campos_permitidos = [
-            "activo"
-        ]
+    # POST /api/metodos-pago/<id>/activar/
 
+    def post(self, request, id):
 
-        for campo in request.data:
-
-            if campo not in campos_permitidos:
-
-                return Response(
-                    {
-                        "success": False,
-                        "message": (
-                            f"El campo '{campo}' "
-                            "no puede modificarse."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-
-        if "activo" not in request.data:
+        if request.data:
 
             return Response(
                 {
                     "success": False,
                     "message": (
-                        "Debe indicar el estado "
-                        "activo del método."
+                        "No se permiten datos. "
+                        "La activación se realiza mediante el endpoint."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        try:
 
-        metodo.activo = request.data["activo"]
+            metodo = activar_metodo_pago(
+                metodo_id=id,
+                usuario=request.user
+            )
 
-        metodo.save(
-            update_fields=[
-                "activo",
-                "fecha_actualizacion"
-            ]
-        )
+        except BusinessException as e:
 
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         serializer = MetodoPagoSerializer(
             metodo
         )
 
-
         return Response(
             {
                 "success": True,
                 "message": (
-                    "Método de pago actualizado correctamente."
+                    "Método de pago activado correctamente."
                 ),
                 "data": serializer.data
             },
@@ -149,46 +140,60 @@ class MetodoPagoView(APIView):
         )
 
 
-    # DELETE /api/metodos-pago/{id}/
-    # Desactivar método
+class MetodoPagoDesactivarView(APIView):
 
-    def delete(self, request, id):
+    permission_classes = [
+        IsAuthenticated,
+        IsAdmin
+    ]
 
-        try:
 
-            metodo = MetodoPago.objects.get(
-                id=id
-            )
+    # POST /api/metodos-pago/<id>/desactivar/
 
-        except MetodoPago.DoesNotExist:
+    def post(self, request, id):
+
+        if request.data:
 
             return Response(
                 {
                     "success": False,
                     "message": (
-                        "Método de pago no encontrado."
+                        "No se permiten datos. "
+                        "La desactivación se realiza mediante el endpoint."
                     )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+
+            metodo = desactivar_metodo_pago(
+                metodo_id=id,
+                usuario=request.user
+            )
+
+        except BusinessException as e:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                    "data": None
                 },
                 status=status.HTTP_404_NOT_FOUND
             )
 
-
-        metodo.activo = False
-
-        metodo.save(
-            update_fields=[
-                "activo",
-                "fecha_actualizacion"
-            ]
+        serializer = MetodoPagoSerializer(
+            metodo
         )
-
 
         return Response(
             {
                 "success": True,
                 "message": (
                     "Método de pago desactivado correctamente."
-                )
+                ),
+                "data": serializer.data
             },
             status=status.HTTP_200_OK
         )
@@ -205,10 +210,7 @@ class MetodoPagoActivoView(APIView):
 
     def get(self, request):
 
-        metodos = MetodoPago.objects.filter(
-            activo=True
-        )
-
+        metodos = listar_metodos_pago_activos()
 
         data = [
             {
@@ -218,7 +220,6 @@ class MetodoPagoActivoView(APIView):
 
             for metodo in metodos
         ]
-
 
         return Response(
             {

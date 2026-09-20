@@ -1,9 +1,9 @@
 import logging
 
-from django.db.models import Sum, IntegerField, Value
+from django.db.models import Prefetch, Sum, IntegerField, Value
 from django.db.models.functions import Coalesce
 
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -14,6 +14,7 @@ from .serializers import VentaSerializer
 from .services import crear_venta, cancelar_venta
 
 from devoluciones.models import DetalleDevolucion
+from detalle_venta.models import DetalleVenta
 from garantias.models import Garantia
 
 from config.exceptions import BusinessException
@@ -103,6 +104,8 @@ def _ejecutar_servicio(
 def _construir_mapas(
     detalle_ids,
 ):
+    if not detalle_ids:
+        return {}, {}
 
     devueltas_map = {
         str(r["detalle_venta_id"]): r["total"]
@@ -139,6 +142,7 @@ def _construir_mapas(
                 estado__in=[
                     "PENDIENTE",
                     "APROBADA",
+                    "FINALIZADA",
                 ],
             )
             .values(
@@ -260,12 +264,16 @@ def _serializar_venta(
 # ==============================================================
 
 class VentaViewSet(
-    viewsets.ModelViewSet
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
+    viewsets.GenericViewSet,
 ):
 
     queryset = Venta.objects.all()
 
     serializer_class = VentaSerializer
+    permission_classes = [IsAuthenticated]
 
     http_method_names = [
         "get",
@@ -275,16 +283,13 @@ class VentaViewSet(
     ]
 
     pagination_class = VentaPagination
+    
+    lookup_value_regex = (
+        "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+        "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        "[0-9a-fA-F]{12}"
+    )
 
-    # ==========================================================
-    # PERMISOS
-    # ==========================================================
-
-    def get_permissions(self):
-
-        return [
-            IsAuthenticated()
-        ]
 
     # ==========================================================
     # CREAR VENTA
@@ -341,6 +346,12 @@ class VentaViewSet(
         *args,
         **kwargs,
     ):
+        error = _usuario_activo(
+            request.user
+        )
+        
+        if error:
+            return error
 
         ventas = (
             Venta.objects
@@ -420,6 +431,12 @@ class VentaViewSet(
         request,
         pk=None,
     ):
+        error = _usuario_activo(
+            request.user
+        )
+        
+        if error:
+            return error
 
         queryset = (
             Venta.objects
@@ -430,7 +447,14 @@ class VentaViewSet(
                 "corte_caja__caja",
             )
             .prefetch_related(
-                "detalles__variante__producto",
+                Prefetch(
+                    "detalles",
+                    queryset=DetalleVenta.objects
+                    .select_related(
+                        "variante",
+                        "variante__producto",
+                    )
+                )
             )
         )
 

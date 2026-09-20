@@ -162,6 +162,9 @@ def desactivar_usuario(
 ):
 
     with transaction.atomic():
+        usuario = Usuario.objects.select_for_update().get(
+            pk=usuario.pk
+        )
 
         corte_abierto = (
             CorteCaja.objects

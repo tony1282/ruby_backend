@@ -10,6 +10,11 @@ from rest_framework import (
 
 from rest_framework.response import Response
 
+from rest_framework.exceptions import (
+    ValidationError,
+    NotFound,
+)
+
 from rest_framework.permissions import (
     IsAuthenticated
 )
@@ -32,9 +37,7 @@ from usuarios.permissions import IsAdmin
 from config.exceptions import BusinessException
 
 
-class VariantePagination(
-    PageNumberPagination
-):
+class VariantePagination(PageNumberPagination):
 
     page_size = 50
 
@@ -42,6 +45,25 @@ class VariantePagination(
 
     max_page_size = 200
 
+    def paginate_queryset(
+        self,
+        queryset,
+        request,
+        view=None,
+    ):
+
+        try:
+            return super().paginate_queryset(
+                queryset,
+                request,
+                view,
+            )
+
+        except NotFound:
+
+            raise NotFound(
+                "La página solicitada no es válida."
+            )
 
 class VarianteViewSet(
     viewsets.ModelViewSet
@@ -159,21 +181,28 @@ class VarianteViewSet(
             )
 
             if activo_param is not None:
+                activo_param = activo_param.lower()
 
-                if activo_param.lower() == "todos":
+                if activo_param == "todos":
+                    queryset = Variante.objects.all()
 
-                    queryset = (
-                        Variante.objects.all()
+                elif activo_param in ("true", "1"):
+                    queryset = Variante.objects.filter(
+                        activo=True
+                    )
+
+                elif activo_param in ("false", "0"):
+                    queryset = Variante.objects.filter(
+                        activo=False
                     )
 
                 else:
-
-                    queryset = (
-                        Variante.objects.filter(
-                            activo=activo_param.lower()
-                            in ("true", "1")
+                    raise ValidationError({
+                        "activo": (
+                            "El parámetro 'activo' solo acepta "
+                            "true, 1, false, 0 o todos."
                         )
-                    )
+                    })
 
                 if producto_id:
 
@@ -225,22 +254,21 @@ class VarianteViewSet(
     # ==========================================================
 
     def get_permissions(self):
-
         if self.action in [
             "list",
             "retrieve",
+            "create",
+            "update",
+            "partial_update",
             "buscar_por_codigo",
-            "alertas_stock"
+            "alertas_stock",
         ]:
+            return [IsAuthenticated()]
 
-            return [
-                IsAuthenticated()
-            ]
+        if self.action in ["activar", "desactivar"]:
+            return [IsAuthenticated(), IsAdmin()]
 
-        return [
-            IsAuthenticated(),
-            IsAdmin()
-        ]
+        return [IsAuthenticated()]
 
     # ==========================================================
     # CREAR
@@ -292,19 +320,19 @@ class VarianteViewSet(
             )
 
         except IntegrityError:
-
             return Response(
                 {
                     "success": False,
                     "message": (
-                        "Ya existe una variante con "
-                        "este SKU o código de barras."
+                        "No se pudo guardar la variante porque "
+                        "los datos enviados entran en conflicto "
+                        "con un registro existente."
                     ),
                     "data": None
                 },
                 status=status.HTTP_409_CONFLICT
             )
-
+            
         serializer.instance = variante
 
         return Response(
@@ -379,13 +407,13 @@ class VarianteViewSet(
             )
 
         except IntegrityError:
-
             return Response(
                 {
                     "success": False,
                     "message": (
-                        "Ya existe una variante con "
-                        "este SKU o código de barras."
+                        "No se pudo guardar la variante porque "
+                        "los datos enviados entran en conflicto "
+                        "con un registro existente."
                     ),
                     "data": None
                 },
@@ -432,55 +460,40 @@ class VarianteViewSet(
             .order_by(
                 "stock",
                 "producto__nombre",
-                "nombre"
+                "nombre",
+                "id"
             )
         )
-
+        paginator = VariantePagination()
+        
+        pagina = paginator.paginate_queryset(
+            variantes,
+            request,
+            view=self,
+        )
+        
         data = []
 
-        for variante in variantes:
+        for variante in pagina:
 
             data.append(
-                {
-                    "id": str(variante.id),
-                    "producto": (
-                        variante.producto.nombre
-                    ),
-                    "variante": (
-                        variante.nombre
-                    ),
-                    "codigo_barras": (
-                        variante.codigo_barras
-                    ),
-                    "sku": (
-                        variante.sku
-                    ),
-                    "stock": (
-                        variante.stock
-                    ),
-                    "stock_minimo": (
-                        variante.stock_minimo
-                    ),
-                    "estado": (
-                        "AGOTADO"
-                        if variante.stock == 0
-                        else "BAJO"
-                    ),
-                }
-            )
-
-        return Response(
             {
-                "success": True,
-                "message": (
-                    "Alertas de stock obtenidas "
-                    "correctamente."
+                "id": str(variante.id),
+                "producto": variante.producto.nombre,
+                "variante": variante.nombre,
+                "codigo_barras": variante.codigo_barras,
+                "sku": variante.sku,
+                "stock": variante.stock,
+                "stock_minimo": variante.stock_minimo,
+                "estado": (
+                    "AGOTADO"
+                    if variante.stock == 0
+                    else "BAJO"
                 ),
-                "data": data,
-                "total": len(data),
-            },
-            status=status.HTTP_200_OK
+            }
         )
+
+        return paginator.get_paginated_response(data)
 
     # ==========================================================
     # ACTIVAR

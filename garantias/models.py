@@ -98,11 +98,20 @@ class Garantia(models.Model):
 
     class Meta:
         ordering = ["-fecha"]
+
         indexes = [
-            models.Index(fields=["venta"]),
-            models.Index(fields=["detalle_venta"]),
-            models.Index(fields=["variante"]),
             models.Index(fields=["estado"]),
+            models.Index(
+                fields=["detalle_venta", "estado"],
+                name="garantia_detalle_estado_idx",
+            ),
+        ]
+
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(cantidad__gte=1),
+                name="garantia_cantidad_mayor_cero",
+            ),
         ]
 
     def __str__(self):

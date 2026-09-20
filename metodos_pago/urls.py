@@ -2,12 +2,12 @@ from django.urls import path
 
 from .views import (
     MetodoPagoView,
-    MetodoPagoActivoView
+    MetodoPagoActivoView,
+    MetodoPagoActivarView,
+    MetodoPagoDesactivarView,
 )
 
-
 urlpatterns = [
-
     path(
         "metodos-pago/",
         MetodoPagoView.as_view()
@@ -19,8 +19,12 @@ urlpatterns = [
     ),
 
     path(
-        "metodos-pago/<uuid:id>/",
-        MetodoPagoView.as_view()
+        "metodos-pago/<uuid:id>/activar/",
+        MetodoPagoActivarView.as_view()
     ),
 
+    path(
+        "metodos-pago/<uuid:id>/desactivar/",
+        MetodoPagoDesactivarView.as_view()
+    ),
 ]

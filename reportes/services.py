@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime, time, timedelta
 
 from django.db.models import Sum, F, Count, Prefetch
 from django.utils import timezone
@@ -62,24 +63,35 @@ def _aplicar_filtros_fecha(
     fecha_fin,
 ):
     """
-    Aplica filtros inclusivos por fecha.
+    Aplica filtros inclusivos por fecha
+    utilizando rangos datetime index-friendly.
     """
 
     if fecha_inicio:
+        inicio = timezone.make_aware(
+            datetime.combine(
+                fecha_inicio,
+                time.min,
+            )
+        )
 
         qs = qs.filter(
             **{
-                f"{campo}__date__gte":
-                    fecha_inicio
+                f"{campo}__gte": inicio,
             }
         )
 
     if fecha_fin:
+        fin_exclusivo = timezone.make_aware(
+            datetime.combine(
+                fecha_fin,
+                time.min,
+            )
+        ) + timedelta(days=1)
 
         qs = qs.filter(
             **{
-                f"{campo}__date__lte":
-                    fecha_fin
+                f"{campo}__lt": fin_exclusivo,
             }
         )
 
@@ -198,140 +210,94 @@ def _metodos_dict(
     }
 
 
-def reporte_resumen_dia(
-    fecha=None,
-    usuario_id=None,
-):
-
-    if fecha is None:
+def reporte_resumen_dia( 
+    fecha=None, 
+    usuario_id=None, 
+): 
+ 
+    if fecha is None: 
         fecha = timezone.localdate()
 
-    # --------------------------------------------------------
-    # Ventas completadas o devueltas: una venta devuelta sí
-    # generó ingreso ese día (el reembolso se resta aparte,
-    # más abajo, contra su propia fecha). Mismo criterio ya
-    # aplicado en corte_caja para evitar que el dinero de una
-    # venta desaparezca del reporte del día en que se vendió.
-    # --------------------------------------------------------
+    inicio = timezone.make_aware( 
+        datetime.combine( 
+            fecha, 
+            time.min, 
+        ) 
+    ) 
 
-    ventas = Venta.objects.filter(
-        fecha__date=fecha,
-        estado__in=[
-            "COMPLETADA",
-            "DEVUELTA",
-        ],
-    )
+    fin_exclusivo = inicio + timedelta(days=1)
 
-    if usuario_id:
-        ventas = ventas.filter(
-            usuario_id=usuario_id
-    )
-
-    resumen = ventas.aggregate(
-
-        cantidad_ventas=Count(
-            "id"
-        ),
-
-        subtotal=Sum(
-            "subtotal"
-        ),
-
-        descuento=Sum(
-            "descuento"
-        ),
-
-        iva=Sum(
-            "iva"
-        ),
-
-        total=Sum(
-            "total"
-        ),
-    )
-
-    total_vendido = dinero(
-        resumen["total"]
-    )
-
-    # --------------------------------------------------------
-    # Reembolsos
-    # --------------------------------------------------------
-
-    reembolsos_qs = (
-        MovimientoCaja.objects.filter(
-            fecha__date=fecha,
-            tipo="REEMBOLSO",
+    ventas = Venta.objects.filter( 
+        fecha__gte=inicio,
+        fecha__lt=fin_exclusivo,
+        estado__in=[ 
+            "COMPLETADA", 
+            "DEVUELTA", 
+        ], 
+    ) 
+ 
+    if usuario_id: 
+        ventas = ventas.filter( 
+            usuario_id=usuario_id 
         )
+
+    resumen = ventas.aggregate( 
+        cantidad_ventas=Count("id"), 
+        subtotal=Sum("subtotal"), 
+        descuento=Sum("descuento"), 
+        iva=Sum("iva"), 
+        total=Sum("total"), 
+    ) 
+ 
+    total_vendido = dinero( 
+        resumen["total"] 
     )
 
-    if usuario_id:
-        reembolsos_qs = reembolsos_qs.filter(
-            usuario_id=usuario_id
+    reembolsos_qs = ( 
+        MovimientoCaja.objects.filter( 
+            fecha__gte=inicio,
+            fecha__lt=fin_exclusivo,
+            tipo="REEMBOLSO", 
+        ) 
+    ) 
+ 
+    if usuario_id: 
+        reembolsos_qs = reembolsos_qs.filter( 
+            usuario_id=usuario_id 
         )
-        
-    reembolsos = dinero(
-        reembolsos_qs.aggregate(
-            total=Sum("monto")
-    )["total"]
+
+    reembolsos = dinero( 
+        reembolsos_qs.aggregate( 
+            total=Sum("monto") 
+        )["total"] 
     )
-    
-    
 
     return {
-
-        "fecha":
-            fecha,
-
-        "cantidad_ventas":
-            resumen["cantidad_ventas"]
-            or 0,
-
-        "subtotal":
-            dinero(
-                resumen["subtotal"]
-            ),
-
-        "descuento":
-            dinero(
-                resumen["descuento"]
-            ),
-
-        "iva":
-            dinero(
-                resumen["iva"]
-            ),
-
-        "total_vendido":
-            total_vendido,
-
-        "reembolsos":
-            reembolsos,
-
-        "venta_neta":
-            dinero(
-                total_vendido
-                - reembolsos
-            ),
-
-        "metodos_pago":
-            _metodos_dict(
-                _totales_por_metodo(
-                    ventas,
-                    "total",
-                )
-            ),
-
-        "reembolsos_por_metodo":
-            _metodos_dict(
-                _totales_por_metodo(
-                    reembolsos_qs,
-                    "monto",
-                )
-            ),
+        "fecha": fecha,
+        "cantidad_ventas": resumen["cantidad_ventas"] or 0,
+        "subtotal": dinero(resumen["subtotal"]),
+        "descuento": dinero(resumen["descuento"]),
+        "iva": dinero(resumen["iva"]),
+        "total_vendido": total_vendido,
+        "reembolsos": reembolsos,
+        "venta_neta": dinero(
+            total_vendido - reembolsos
+        ),
+        "metodos_pago": _metodos_dict(
+            _totales_por_metodo(
+                ventas,
+                "total",
+            )
+        ),
+        "reembolsos_por_metodo": _metodos_dict(
+            _totales_por_metodo(
+                reembolsos_qs,
+                "monto",
+            )
+        ),
     }
-
-
+    
+    
 # ============================================================
 # REPORTE DE VENTAS
 # ============================================================
@@ -371,54 +337,7 @@ def reporte_ventas(
             estado=estado
         )
 
-    return [
-
-        {
-
-            "id":
-                venta.id,
-
-            "folio":
-                venta.folio,
-
-            "fecha":
-                venta.fecha,
-
-            "usuario":
-                _nombre_usuario(
-                    venta.usuario
-                ),
-
-            "metodo_pago":
-                venta.metodo_pago.nombre,
-
-            "subtotal":
-                dinero(
-                    venta.subtotal
-                ),
-
-            "descuento":
-                dinero(
-                    venta.descuento
-                ),
-
-            "iva":
-                dinero(
-                    venta.iva
-                ),
-
-            "total":
-                dinero(
-                    venta.total
-                ),
-
-            "estado":
-                venta.estado,
-        }
-
-        for venta in qs
-    ]
-
+    return qs
 
 # ============================================================
 # PRODUCTOS MÁS VENDIDOS
@@ -650,56 +569,7 @@ def reporte_inventario():
         )
     )
 
-    return [
-
-        {
-
-            "id":
-                variante.id,
-
-            "producto":
-                variante.producto.nombre,
-
-            "variante":
-                variante.nombre,
-
-            "sku":
-                variante.sku,
-
-            "codigo_barras":
-                variante.codigo_barras,
-
-            "stock_actual":
-                variante.stock,
-
-            "stock_defectuoso":
-                variante.stock_defectuoso,
-
-            "stock_minimo":
-                variante.stock_minimo,
-
-            "costo":
-                dinero(
-                    variante.costo
-                ),
-
-            "precio_menudeo":
-                dinero(
-                    variante.precio_menudeo
-                ),
-
-            "precio_mayoreo":
-                dinero(
-                    variante.precio_mayoreo
-                ),
-
-            "activo":
-                variante.activo,
-        }
-
-        for variante in variantes
-    ]
-
+    return variantes
 
 # ============================================================
 # STOCK BAJO
@@ -723,35 +593,7 @@ def reporte_stock_bajo():
         )
     )
 
-    return [
-
-        {
-
-            "id":
-                variante.id,
-
-            "producto":
-                variante.producto.nombre,
-
-            "variante":
-                variante.nombre,
-
-            "stock_actual":
-                variante.stock,
-
-            "stock_defectuoso":
-                variante.stock_defectuoso,
-
-            "stock_minimo":
-                variante.stock_minimo,
-
-            "necesita_reposicion":
-                True,
-        }
-
-        for variante in variantes
-    ]
-
+    return variantes
 
 # ============================================================
 # CORTES DE CAJA
@@ -780,72 +622,117 @@ def reporte_cortes(
         fecha_fin,
     )
 
-    resultados = []
+    # ========================================================
+    # AGREGADOS DE VENTAS POR CORTE
+    # ========================================================
 
-    for corte in qs:
-
-        # ====================================================
-        # TODAS LAS VENTAS VÁLIDAS DEL CORTE
-        # ====================================================
-
-        ventas = Venta.objects.filter(
-            corte_caja=corte,
+    ventas_por_corte = (
+        Venta.objects
+        .filter(
+            corte_caja__in=qs,
             estado__in=[
                 "COMPLETADA",
                 "DEVUELTA",
             ],
         )
+        .values(
+            "corte_caja_id"
+        )
+        .annotate(
+            total_ventas=Sum("total"),
+            numero_ventas=Count("id"),
+        )
+    )
 
-        resumen_ventas = ventas.aggregate(
+    ventas_data = {
+        row["corte_caja_id"]: row
+        for row in ventas_por_corte
+    }
+
+    # ========================================================
+    # AGREGADOS DE VENTAS EN EFECTIVO POR CORTE
+    # ========================================================
+
+    ventas_efectivo_por_corte = (
+        Venta.objects
+        .filter(
+            corte_caja__in=qs,
+            estado__in=[
+                "COMPLETADA",
+                "DEVUELTA",
+            ],
+            metodo_pago__nombre="EFECTIVO",
+        )
+        .values(
+            "corte_caja_id"
+        )
+        .annotate(
             total=Sum("total"),
-            cantidad=Count("id"),
+        )
+    )
+
+    ventas_efectivo_data = {
+        row["corte_caja_id"]: row["total"]
+        for row in ventas_efectivo_por_corte
+    }
+
+    # ========================================================
+    # AGREGADOS DE REEMBOLSOS EN EFECTIVO POR CORTE
+    # ========================================================
+
+    reembolsos_por_corte = (
+        MovimientoCaja.objects
+        .filter(
+            corte_caja__in=qs,
+            metodo_pago__nombre="EFECTIVO",
+            tipo="REEMBOLSO",
+        )
+        .values(
+            "corte_caja_id"
+        )
+        .annotate(
+            total=Sum("monto"),
+        )
+    )
+
+    reembolsos_data = {
+        row["corte_caja_id"]: row["total"]
+        for row in reembolsos_por_corte
+    }
+
+    # ========================================================
+    # CONSTRUIR RESULTADO
+    # ========================================================
+
+    resultados = []
+
+    for corte in qs:
+
+        venta_data = ventas_data.get(
+            corte.id,
+            {},
         )
 
         total_ventas = dinero(
-            resumen_ventas["total"]
+            venta_data.get("total_ventas")
         )
 
         numero_ventas = (
-            resumen_ventas["cantidad"]
+            venta_data.get("numero_ventas")
             or 0
         )
 
-        # ====================================================
-        # VENTAS EN EFECTIVO
-        # ====================================================
-
-        ventas_efectivo = ventas.filter(
-            metodo_pago__nombre="EFECTIVO"
-        )
-
         total_ventas_efectivo = dinero(
-            ventas_efectivo.aggregate(
-                total=Sum("total")
-            )["total"]
-        )
-
-        # ====================================================
-        # REEMBOLSOS EN EFECTIVO
-        # ====================================================
-
-        reembolsos_efectivo = (
-            MovimientoCaja.objects
-            .filter(
-                corte_caja=corte,
-                metodo_pago__nombre="EFECTIVO",
-                tipo="REEMBOLSO",
+            ventas_efectivo_data.get(
+                corte.id
             )
         )
 
         total_reembolsos = dinero(
-            reembolsos_efectivo.aggregate(
-                total=Sum("monto")
-            )["total"]
+            reembolsos_data.get(
+                corte.id
+            )
         )
-
-        # ====================================================
-        # EFECTIVO ESPERADO ACTUAL
-        # ====================================================
 
         efectivo_esperado_actual = dinero(
             corte.efectivo_inicial
@@ -885,7 +772,7 @@ def reporte_cortes(
 
             "total_reembolsos":
                 total_reembolsos,
-   
+
             "efectivo_esperado_actual":
                 efectivo_esperado_actual,
 
@@ -912,76 +799,11 @@ def reporte_cortes(
 # DEVOLUCIONES
 # ============================================================
 
-def _serializar_devolucion(
-    devolucion
-):
-
-    return {
-
-        "id":
-            devolucion.id,
-
-        "venta_folio":
-            devolucion.venta.folio,
-
-        "usuario":
-            _nombre_usuario(
-                devolucion.usuario
-            ),
-
-        "tipo":
-            devolucion.tipo,
-
-        "motivo":
-            devolucion.motivo,
-
-        "estado":
-            devolucion.estado,
-
-        "total_devuelto":
-            dinero(
-                devolucion.total_devuelto
-            ),
-
-        "fecha":
-            devolucion.fecha,
-
-        "productos": [
-
-            {
-
-                "producto":
-                    detalle
-                    .detalle_venta
-                    .variante
-                    .producto
-                    .nombre,
-
-                "variante":
-                    detalle
-                    .detalle_venta
-                    .variante
-                    .nombre,
-
-                "cantidad":
-                    detalle.cantidad,
-
-                "subtotal":
-                    dinero(
-                        detalle.subtotal
-                    ),
-            }
-
-            for detalle
-            in devolucion.detalles.all()
-        ],
-    }
-
-
 def reporte_devoluciones(
     fecha_inicio=None,
     fecha_fin=None,
     estado=None,
+    tipo=None,
 ):
 
     qs = (
@@ -993,9 +815,7 @@ def reporte_devoluciones(
         .prefetch_related(
             "detalles__detalle_venta__variante__producto"
         )
-        .order_by(
-            "-fecha"
-        )
+        .order_by("-fecha")
     )
 
     qs = _aplicar_filtros_fecha(
@@ -1005,88 +825,27 @@ def reporte_devoluciones(
         fecha_fin,
     )
 
-    # --------------------------------------------------------
-    # FILTRO POR ESTADO
-    # --------------------------------------------------------
-
     if estado:
-
         qs = qs.filter(
             estado=estado
         )
-
-    return [
-        _serializar_devolucion(
-            devolucion
+        
+    if tipo:
+        qs = qs.filter(
+            tipo=tipo
         )
-        for devolucion in qs
-    ]
 
+    return qs
 
 # ============================================================
 # GARANTÍAS
 # ============================================================
 
-def _serializar_garantia(
-    garantia
-):
-
-    return {
-
-        "id":
-            garantia.id,
-
-        "venta_folio":
-            garantia.venta.folio,
-
-        "producto":
-            garantia.variante
-            .producto
-            .nombre,
-
-        "variante":
-            garantia.variante
-            .nombre,
-
-        "variante_nueva":
-            (
-                garantia.variante_nueva.nombre
-                if garantia.variante_nueva
-                else None
-            ),
-
-        "cantidad":
-            garantia.cantidad,
-
-        "usuario":
-            _nombre_usuario(
-                garantia.usuario
-            ),
-
-        "motivo":
-            garantia.motivo,
-
-        "estado":
-            garantia.estado,
-
-        "resolucion":
-            garantia.resolucion,
-
-        "observaciones":
-            garantia.observaciones,
-
-        "fecha":
-            garantia.fecha,
-
-        "fecha_actualizacion":
-            garantia.fecha_actualizacion,
-    }
-
-
 def reporte_garantias(
     fecha_inicio=None,
     fecha_fin=None,
     estado=None,
+    resolucion=None,
 ):
 
     qs = (
@@ -1116,70 +875,15 @@ def reporte_garantias(
             estado=estado
         )
 
-    return [
-        _serializar_garantia(
-            garantia
+    if resolucion:
+        qs = qs.filter(
+            resolucion=resolucion
         )
-        for garantia in qs
-    ]
-
+    return qs
 
 # ============================================================
 # MOVIMIENTOS DE INVENTARIO
 # ============================================================
-
-def _serializar_movimiento(
-    movimiento
-):
-
-    return {
-
-        "id":
-            movimiento.id,
-
-        "producto":
-            movimiento
-            .variante
-            .producto
-            .nombre,
-
-        "variante":
-            movimiento
-            .variante
-            .nombre,
-
-        "tipo":
-            movimiento.tipo,
-
-        "stock_anterior":
-            movimiento.stock_anterior,
-
-        "cantidad":
-            movimiento.cantidad,
-
-        "stock_nuevo":
-            movimiento.stock_nuevo,
-
-        "stock_defectuoso_anterior":
-            movimiento
-            .stock_defectuoso_anterior,
-
-        "stock_defectuoso_nuevo":
-            movimiento
-            .stock_defectuoso_nuevo,
-
-        "observaciones":
-            movimiento.observaciones,
-
-        "usuario":
-            _nombre_usuario(
-                movimiento.usuario
-            ),
-
-        "fecha":
-            movimiento.fecha,
-    }
-
 
 def reporte_movimientos(
     fecha_inicio=None,
@@ -1212,9 +916,4 @@ def reporte_movimientos(
             tipo=tipo
         )
 
-    return [
-        _serializar_movimiento(
-            movimiento
-        )
-        for movimiento in qs
-    ]
+    return qs

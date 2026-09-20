@@ -1,5 +1,5 @@
 from rest_framework import serializers
-
+from decimal import Decimal
 
 # ============================================================
 # REPORTE DE VENTAS
@@ -15,9 +15,11 @@ class ReporteVentaSerializer(
 
     fecha = serializers.DateTimeField()
 
-    usuario = serializers.CharField()
+    usuario = serializers.SerializerMethodField()
 
-    metodo_pago = serializers.CharField()
+    metodo_pago = serializers.CharField(
+        source="metodo_pago.nombre"
+    )
 
     subtotal = serializers.DecimalField(
         max_digits=10,
@@ -41,6 +43,9 @@ class ReporteVentaSerializer(
 
     estado = serializers.CharField()
 
+    def get_usuario(self, obj):
+        return f"{obj.usuario.nombre} {obj.usuario.apellido}"
+    
 
 # ============================================================
 # PRODUCTOS MÁS VENDIDOS
@@ -72,15 +77,21 @@ class ReporteInventarioSerializer(
 
     id = serializers.UUIDField()
 
-    producto = serializers.CharField()
+    producto = serializers.CharField(
+        source="producto.nombre"
+    )
 
-    variante = serializers.CharField()
+    variante = serializers.CharField(
+        source="nombre"
+    )
 
     sku = serializers.CharField()
 
     codigo_barras = serializers.CharField()
 
-    stock_actual = serializers.IntegerField()
+    stock_actual = serializers.IntegerField(
+        source="stock"
+    )
 
     stock_defectuoso = serializers.IntegerField()
 
@@ -103,7 +114,6 @@ class ReporteInventarioSerializer(
 
     activo = serializers.BooleanField()
 
-
 # ============================================================
 # STOCK BAJO
 # ============================================================
@@ -114,18 +124,26 @@ class ReporteStockBajoSerializer(
 
     id = serializers.UUIDField()
 
-    producto = serializers.CharField()
+    producto = serializers.CharField(
+        source="producto.nombre"
+    )
 
-    variante = serializers.CharField()
+    variante = serializers.CharField(
+        source="nombre"
+    )
 
-    stock_actual = serializers.IntegerField()
+    stock_actual = serializers.IntegerField(
+        source="stock"
+    )
 
     stock_defectuoso = serializers.IntegerField()
 
     stock_minimo = serializers.IntegerField()
 
-    necesita_reposicion = serializers.BooleanField()
+    necesita_reposicion = serializers.SerializerMethodField()
 
+    def get_necesita_reposicion(self, obj):
+        return obj.stock <= obj.stock_minimo
 
 # ============================================================
 # CORTES DE CAJA
@@ -181,7 +199,6 @@ class ReporteCorteSerializer(
         allow_null=True,
     )
     
-    
 # ============================================================
 # DEVOLUCIONES
 # ============================================================
@@ -208,14 +225,14 @@ class ReporteDevolucionSerializer(
 
     id = serializers.UUIDField()
 
-    venta_folio = serializers.CharField()
+    venta_folio = serializers.CharField(
+        source="venta.folio"
+    )
 
-    usuario = serializers.CharField()
+    usuario = serializers.SerializerMethodField()
 
     tipo = serializers.CharField()
-
     motivo = serializers.CharField()
-
     estado = serializers.CharField()
 
     total_devuelto = serializers.DecimalField(
@@ -223,11 +240,43 @@ class ReporteDevolucionSerializer(
         decimal_places=2,
     )
 
-    productos = ReporteDevolucionProductoSerializer(
-        many=True
-    )
+    productos = serializers.SerializerMethodField()
 
     fecha = serializers.DateTimeField()
+
+    def get_usuario(self, obj):
+        return f"{obj.usuario.nombre} {obj.usuario.apellido}"
+
+    def get_productos(self, obj):
+
+        productos = [
+            {
+                "producto": (
+                    detalle.detalle_venta
+                    .variante
+                    .producto
+                    .nombre
+                ),
+                "variante": (
+                    detalle.detalle_venta
+                    .variante
+                    .nombre
+                ),
+                "cantidad": detalle.cantidad,
+                "subtotal": (
+                    detalle.subtotal
+                    or Decimal("0.00")
+                ),
+            }
+            for detalle in obj.detalles.all()
+        ]
+
+        return ReporteDevolucionProductoSerializer(
+            productos,
+            many=True,
+        ).data
+        
+
 
 
 # ============================================================
@@ -240,19 +289,26 @@ class ReporteGarantiaSerializer(
 
     id = serializers.UUIDField()
 
-    venta_folio = serializers.CharField()
+    venta_folio = serializers.CharField(
+        source="venta.folio"
+    )
 
-    producto = serializers.CharField()
+    producto = serializers.CharField(
+        source="variante.producto.nombre"
+    )
 
-    variante = serializers.CharField()
+    variante = serializers.CharField(
+        source="variante.nombre"
+    )
 
     variante_nueva = serializers.CharField(
+        source="variante_nueva.nombre",
         allow_null=True,
     )
 
     cantidad = serializers.IntegerField()
 
-    usuario = serializers.CharField()
+    usuario = serializers.SerializerMethodField()
 
     motivo = serializers.CharField()
 
@@ -270,6 +326,9 @@ class ReporteGarantiaSerializer(
 
     fecha_actualizacion = serializers.DateTimeField()
 
+    def get_usuario(self, obj):
+        return f"{obj.usuario.nombre} {obj.usuario.apellido}"
+
 
 # ============================================================
 # MOVIMIENTOS DE INVENTARIO
@@ -281,9 +340,13 @@ class ReporteMovimientoSerializer(
 
     id = serializers.UUIDField()
 
-    producto = serializers.CharField()
+    producto = serializers.CharField(
+        source="variante.producto.nombre"
+    )
 
-    variante = serializers.CharField()
+    variante = serializers.CharField(
+        source="variante.nombre"
+    )
 
     tipo = serializers.CharField()
 
@@ -301,11 +364,14 @@ class ReporteMovimientoSerializer(
         allow_null=True,
     )
 
-    usuario = serializers.CharField()
+    usuario = serializers.SerializerMethodField()
 
     fecha = serializers.DateTimeField()
 
-
+    def get_usuario(self, obj):
+        return f"{obj.usuario.nombre} {obj.usuario.apellido}"
+    
+    
 # ============================================================
 # RESUMEN DEL DÍA
 # ============================================================
@@ -348,6 +414,18 @@ class ReporteResumenDiaSerializer(
         decimal_places=2,
     )
 
-    metodos_pago = serializers.DictField()
+    metodos_pago = serializers.DictField(
+        child=serializers.DecimalField(
+            max_digits=12,
+            decimal_places=2,
+            coerce_to_string=True,
+        )
+    )
 
-    reembolsos_por_metodo = serializers.DictField()
+    reembolsos_por_metodo = serializers.DictField(
+        child=serializers.DecimalField(
+            max_digits=12,
+            decimal_places=2,
+            coerce_to_string=True,
+        )
+    )

@@ -25,6 +25,15 @@ class CategoriaSerializer(serializers.ModelSerializer):
             "fecha_actualizacion",
         ]
 
+        extra_kwargs = {
+            "nombre": {
+                "error_messages": {
+                    "blank": "El nombre de la categoría es obligatorio.",
+                    "max_length": "El nombre de la categoría no puede superar los 100 caracteres.",
+                }
+            }
+        }
+
     # ==========================================================
     # VALIDACIÓN GENERAL
     # ==========================================================

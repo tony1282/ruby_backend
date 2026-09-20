@@ -1,5 +1,7 @@
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
+from rest_framework.exceptions import NotFound
+
 
 
 class StandardPagination(PageNumberPagination):
@@ -9,6 +11,16 @@ class StandardPagination(PageNumberPagination):
     page_size_query_param = "page_size"
 
     max_page_size = 200
+    
+    def paginate_queryset(self, queryset, request, view=None):
+        try:
+            return super().paginate_queryset(
+                queryset,
+                request,
+                view
+            )
+        except NotFound:
+            raise NotFound("La página solicitada no es válida.")
 
     def get_paginated_response(self, data):
 

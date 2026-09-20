@@ -1,6 +1,7 @@
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import NotFound
 
 
 class BusinessException(Exception):
@@ -59,6 +60,20 @@ def custom_exception_handler(exc, context):
     # Si DRF no sabe manejar la excepción,
     # dejamos que continúe su comportamiento normal.
     if response is None:
+        return response
+
+    # ----------------------------------------------------------
+    # RECURSO NO ENCONTRADO
+    # ----------------------------------------------------------
+    
+    if response.status_code == status.HTTP_404_NOT_FOUND:
+
+        response.data = {
+            "success": False,
+            "message": "El recurso solicitado no existe.",
+            "data": None,
+        }
+
         return response
 
     # ----------------------------------------------------------

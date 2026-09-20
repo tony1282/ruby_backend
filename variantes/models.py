@@ -1,8 +1,9 @@
-from django.db import models
 import uuid
 
-from productos.models import Producto
+from django.db import models
+from django.db.models.functions import Lower
 
+from productos.models import Producto
 
 class Variante(models.Model):
 
@@ -86,6 +87,25 @@ class Variante(models.Model):
     fecha_actualizacion = models.DateTimeField(
         auto_now=True
     )
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["producto", "nombre"],
+                name="variante_producto_nombre_unico",
+            ),
+            models.UniqueConstraint(
+                Lower("sku"),
+                name="variante_sku_lower_unico",
+            ),
+        ]
+
+        indexes = [
+            models.Index(
+                fields=["producto", "activo"],
+                name="variante_producto_activo_idx",
+            ),
+        ]
 
     def __str__(self):
 

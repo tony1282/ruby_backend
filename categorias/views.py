@@ -1,19 +1,21 @@
-from django.db import transaction, IntegrityError
+from django.db import IntegrityError
 
 from rest_framework import (
     viewsets,
-    status
+    status,
 )
 
 from rest_framework.response import Response
 
 from rest_framework.permissions import (
-    IsAuthenticated
+    IsAuthenticated,
 )
 
 from rest_framework.decorators import action
 
 from usuarios.permissions import IsAdmin
+
+from config.exceptions import BusinessException
 
 from .models import Categoria
 
@@ -21,8 +23,11 @@ from .serializers import (
     CategoriaSerializer
 )
 
-from bitacora.services import (
-    registrar_bitacora
+from .services import (
+    crear_categoria,
+    actualizar_categoria,
+    activar_categoria,
+    desactivar_categoria,
 )
 
 
@@ -39,9 +44,8 @@ class CategoriaViewSet(
         "post",
         "put",
         "patch",
-        "delete",
         "head",
-        "options"
+        "options",
     ]
 
     # ==========================================================
@@ -63,7 +67,7 @@ class CategoriaViewSet(
 
             return Categoria.objects.all().order_by(
                 "nombre",
-                "id"
+                "id",
             )
 
         # ------------------------------------------------------
@@ -75,31 +79,44 @@ class CategoriaViewSet(
             activo=True
         ).order_by(
             "nombre",
-            "id"
+            "id",
         )
 
     # ==========================================================
     # PERMISOS
     # ==========================================================
-
     def get_permissions(self):
+
+    # ------------------------------------------------------
+    # EMPLEADO + ADMIN/SUPERADMIN
+    # Pueden crear y editar categorías.
+    # ------------------------------------------------------
 
         if self.action in [
             "create",
             "update",
             "partial_update",
-            "destroy",
-            "activar",
-            "desactivar"
         ]:
-
             return [
                 IsAuthenticated(),
-                IsAdmin()
+            ]
+
+    # ------------------------------------------------------
+    # SOLO ADMIN/SUPERADMIN
+    # Pueden activar y desactivar categorías.
+    # ------------------------------------------------------
+
+        if self.action in [
+            "activar",
+            "desactivar",
+        ]:
+            return [
+                IsAuthenticated(),
+                IsAdmin(),
             ]
 
         return [
-            IsAuthenticated()
+            IsAuthenticated(),
         ]
 
     # ==========================================================
@@ -110,7 +127,7 @@ class CategoriaViewSet(
         self,
         request,
         *args,
-        **kwargs
+        **kwargs,
     ):
 
         serializer = self.get_serializer(
@@ -126,34 +143,17 @@ class CategoriaViewSet(
                         "No se pudo registrar "
                         "la categoría."
                     ),
-                    "data": serializer.errors
+                    "data": serializer.errors,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
 
-            with transaction.atomic():
-
-                categoria = serializer.save()
-
-                registrar_bitacora(
-
-                    usuario=request.user,
-
-                    modulo="Categorias",
-
-                    accion="CREAR_CATEGORIA",
-
-                    descripcion=(
-                        f"Categoría '{categoria.nombre}' "
-                        f"creada por "
-                        f"{request.user.nombre} "
-                        f"{request.user.apellido}. "
-                        f"Descripción: "
-                        f"{categoria.descripcion or 'Sin descripción'}."
-                    )
-                )
+            categoria = crear_categoria(
+                validated_data=serializer.validated_data,
+                usuario=request.user,
+            )
 
         except IntegrityError:
 
@@ -164,10 +164,12 @@ class CategoriaViewSet(
                         "Ya existe una categoría "
                         "con este nombre."
                     ),
-                    "data": None
+                    "data": None,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_409_CONFLICT,
             )
+
+        serializer.instance = categoria
 
         return Response(
             {
@@ -176,11 +178,9 @@ class CategoriaViewSet(
                     "Categoría registrada "
                     "correctamente."
                 ),
-                "data": CategoriaSerializer(
-                    categoria
-                ).data
+                "data": serializer.data,
             },
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
     # ==========================================================
@@ -191,7 +191,7 @@ class CategoriaViewSet(
         self,
         request,
         *args,
-        **kwargs
+        **kwargs,
     ):
 
         categoria = self.get_object()
@@ -199,7 +199,7 @@ class CategoriaViewSet(
         serializer = self.get_serializer(
             categoria,
             data=request.data,
-            partial=False
+            partial=False,
         )
 
         if not serializer.is_valid():
@@ -211,34 +211,18 @@ class CategoriaViewSet(
                         "No se pudo actualizar "
                         "la categoría."
                     ),
-                    "data": serializer.errors
+                    "data": serializer.errors,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
 
-            with transaction.atomic():
-
-                categoria = serializer.save()
-
-                registrar_bitacora(
-
-                    usuario=request.user,
-
-                    modulo="Categorias",
-
-                    accion="ACTUALIZAR_CATEGORIA",
-
-                    descripcion=(
-                        f"Categoría '{categoria.nombre}' "
-                        f"actualizada por "
-                        f"{request.user.nombre} "
-                        f"{request.user.apellido}. "
-                        f"Descripción: "
-                        f"{categoria.descripcion or 'Sin descripción'}."
-                    )
-                )
+            categoria = actualizar_categoria(
+                categoria_id=categoria.id,
+                validated_data=serializer.validated_data,
+                usuario=request.user,
+            )
 
         except IntegrityError:
 
@@ -249,10 +233,12 @@ class CategoriaViewSet(
                         "Ya existe una categoría "
                         "con este nombre."
                     ),
-                    "data": None
+                    "data": None,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_409_CONFLICT,
             )
+
+        serializer.instance = categoria
 
         return Response(
             {
@@ -261,11 +247,9 @@ class CategoriaViewSet(
                     "Categoría actualizada "
                     "correctamente."
                 ),
-                "data": CategoriaSerializer(
-                    categoria
-                ).data
+                "data": serializer.data,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
     # ==========================================================
@@ -276,7 +260,7 @@ class CategoriaViewSet(
         self,
         request,
         *args,
-        **kwargs
+        **kwargs,
     ):
 
         categoria = self.get_object()
@@ -284,7 +268,7 @@ class CategoriaViewSet(
         serializer = self.get_serializer(
             categoria,
             data=request.data,
-            partial=True
+            partial=True,
         )
 
         if not serializer.is_valid():
@@ -296,32 +280,18 @@ class CategoriaViewSet(
                         "No se pudo actualizar "
                         "la categoría."
                     ),
-                    "data": serializer.errors
+                    "data": serializer.errors,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
 
-            with transaction.atomic():
-
-                categoria = serializer.save()
-
-                registrar_bitacora(
-
-                    usuario=request.user,
-
-                    modulo="Categorias",
-
-                    accion="ACTUALIZAR_CATEGORIA",
-
-                    descripcion=(
-                        f"Categoría '{categoria.nombre}' "
-                        f"actualizada por "
-                        f"{request.user.nombre} "
-                        f"{request.user.apellido}."
-                    )
-                )
+            categoria = actualizar_categoria(
+                categoria_id=categoria.id,
+                validated_data=serializer.validated_data,
+                usuario=request.user,
+            )
 
         except IntegrityError:
 
@@ -332,10 +302,12 @@ class CategoriaViewSet(
                         "Ya existe una categoría "
                         "con este nombre."
                     ),
-                    "data": None
+                    "data": None,
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_409_CONFLICT,
             )
+
+        serializer.instance = categoria
 
         return Response(
             {
@@ -344,11 +316,9 @@ class CategoriaViewSet(
                     "Categoría actualizada "
                     "correctamente."
                 ),
-                "data": CategoriaSerializer(
-                    categoria
-                ).data
+                "data": serializer.data,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
     # ==========================================================
@@ -358,54 +328,30 @@ class CategoriaViewSet(
     @action(
         detail=True,
         methods=["post"],
-        url_path="activar"
+        url_path="activar",
     )
     def activar(
         self,
         request,
-        pk=None
+        pk=None,
     ):
 
-        categoria = self.get_object()
+        try:
 
-        if categoria.activo:
+            categoria = activar_categoria(
+                categoria_id=pk,
+                usuario=request.user,
+            )
+
+        except BusinessException as exc:
 
             return Response(
                 {
                     "success": False,
-                    "message": (
-                        "La categoría ya está activa."
-                    ),
-                    "data": None
+                    "message": str(exc),
+                    "data": exc.data,
                 },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        with transaction.atomic():
-
-            categoria.activo = True
-
-            categoria.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
-                usuario=request.user,
-
-                modulo="Categorias",
-
-                accion="ACTIVAR_CATEGORIA",
-
-                descripcion=(
-                    f"Categoría '{categoria.nombre}' "
-                    f"activada correctamente por "
-                    f"{request.user.nombre} "
-                    f"{request.user.apellido}."
-                )
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
@@ -417,9 +363,9 @@ class CategoriaViewSet(
                 ),
                 "data": CategoriaSerializer(
                     categoria
-                ).data
+                ).data,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
     # ==========================================================
@@ -429,75 +375,30 @@ class CategoriaViewSet(
     @action(
         detail=True,
         methods=["post"],
-        url_path="desactivar"
+        url_path="desactivar",
     )
     def desactivar(
         self,
         request,
-        pk=None
+        pk=None,
     ):
 
-        categoria = self.get_object()
+        try:
 
-        if not categoria.activo:
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "La categoría ya está inactiva."
-                    ),
-                    "data": None
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # ------------------------------------------------------
-        # NO DESACTIVAR SI TIENE PRODUCTOS ACTIVOS
-        # ------------------------------------------------------
-
-        if categoria.productos.filter(
-            activo=True
-        ).exists():
-
-            return Response(
-                {
-                    "success": False,
-                    "message": (
-                        "No se puede desactivar "
-                        "la categoría porque tiene "
-                        "productos activos."
-                    ),
-                    "data": None
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        with transaction.atomic():
-
-            categoria.activo = False
-
-            categoria.save(
-                update_fields=[
-                    "activo",
-                    "fecha_actualizacion"
-                ]
-            )
-
-            registrar_bitacora(
-
+            categoria = desactivar_categoria(
+                categoria_id=pk,
                 usuario=request.user,
+            )
 
-                modulo="Categorias",
+        except BusinessException as exc:
 
-                accion="DESACTIVAR_CATEGORIA",
-
-                descripcion=(
-                    f"Categoría '{categoria.nombre}' "
-                    f"desactivada correctamente por "
-                    f"{request.user.nombre} "
-                    f"{request.user.apellido}."
-                )
+            return Response(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "data": exc.data,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
@@ -507,26 +408,7 @@ class CategoriaViewSet(
                     "Categoría desactivada "
                     "correctamente."
                 ),
-                "data": None
+                "data": None,
             },
-            status=status.HTTP_200_OK
-        )
-
-    # ==========================================================
-    # DELETE
-    # ==========================================================
-    # DELETE conserva la desactivación lógica.
-    # ==========================================================
-
-    def destroy(
-        self,
-        request,
-        *args,
-        **kwargs
-    ):
-
-        return self.desactivar(
-            request,
-            *args,
-            **kwargs
+            status=status.HTTP_200_OK,
         )

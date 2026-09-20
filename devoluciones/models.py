@@ -98,13 +98,11 @@ class DetalleDevolucion(models.Model):
         editable=False
     )
 
-
     devolucion = models.ForeignKey(
         Devolucion,
         on_delete=models.CASCADE,
         related_name="detalles"
     )
-
 
     detalle_venta = models.ForeignKey(
         DetalleVenta,
@@ -112,21 +110,29 @@ class DetalleDevolucion(models.Model):
         related_name="devoluciones"
     )
 
-
     cantidad = models.PositiveIntegerField()
-
 
     precio_original = models.DecimalField(
         max_digits=10,
         decimal_places=2
     )
 
-
     subtotal = models.DecimalField(
         max_digits=10,
         decimal_places=2
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["devolucion", "detalle_venta"],
+                name="detalle_devolucion_unico_por_devolucion"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(cantidad__gte=1),
+                name="detalle_devolucion_cantidad_positiva"
+            ),
+        ]
 
     def __str__(self):
         return f"Detalle devolución {self.id}"
