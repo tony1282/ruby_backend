@@ -65,8 +65,23 @@ def custom_exception_handler(exc, context):
     # ----------------------------------------------------------
     # RECURSO NO ENCONTRADO
     # ----------------------------------------------------------
-    
+
     if response.status_code == status.HTTP_404_NOT_FOUND:
+
+        mensaje_original = response.data.get(
+            "detail",
+            ""
+        )
+
+        if str(mensaje_original) == "La página solicitada no es válida.":
+
+            response.data = {
+                "success": False,
+                "message": str(mensaje_original),
+                "data": None,
+            }
+
+            return response
 
         response.data = {
             "success": False,

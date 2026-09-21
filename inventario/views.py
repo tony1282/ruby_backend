@@ -17,7 +17,6 @@ from .services import (
 )
 
 from variantes.models import Variante
-from usuarios.permissions import IsAdmin
 from config.exceptions import BusinessException
 
 
@@ -168,7 +167,6 @@ class MovimientoInventarioViewSet(
     @action(
         detail=False,
         methods=["post"],
-        permission_classes=[IsAdmin],
     )
     def entrada(self, request):
 
@@ -250,7 +248,6 @@ class MovimientoInventarioViewSet(
     @action(
         detail=False,
         methods=["post"],
-        permission_classes=[IsAdmin],
     )
     def salida(self, request):
 
@@ -332,7 +329,6 @@ class MovimientoInventarioViewSet(
     @action(
         detail=False,
         methods=["post"],
-        permission_classes=[IsAdmin],
     )
     def ajuste(self, request):
 

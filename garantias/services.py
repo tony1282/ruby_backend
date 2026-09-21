@@ -4,6 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 from cajas.models import Caja
+from corte_caja.models import CorteCaja
 
 from ventas.models import Venta
 from detalle_venta.models import DetalleVenta
@@ -14,6 +15,7 @@ from bitacora.services import registrar_bitacora
 from config.exceptions import BusinessException
 
 from .models import Garantia
+
 
 
 # ============================================================
@@ -536,6 +538,7 @@ def aprobar_garantia(garantia_id, data, usuario):
         raise BusinessException("La venta no tiene un corte de caja asociado.")
     
     caja_id = venta_base.corte_caja.caja_id
+    corte_caja_id = venta_base.corte_caja_id
 
     # ========================================================
     # LOCK 1: CAJA
@@ -548,9 +551,22 @@ def aprobar_garantia(garantia_id, data, usuario):
     except Caja.DoesNotExist:
         raise BusinessException("La caja asociada a la venta no existe.")
     
+    # ========================================================
+    # LOCK 2: CORTE DE CAJA
+    # ========================================================
+
+    try:
+        CorteCaja.objects.select_for_update().get(
+            id=corte_caja_id,
+            caja_id=caja_id,
+        )
+    except CorteCaja.DoesNotExist:
+        raise BusinessException(
+            "El corte de caja asociado a la venta no existe."
+        )
     
     # ========================================================
-    # LOCK 2: VENTA
+    # LOCK 3: VENTA
     # ========================================================
 
     try:
@@ -577,7 +593,7 @@ def aprobar_garantia(garantia_id, data, usuario):
         )
 
     # ========================================================
-    # LOCK 3: GARANTÍA
+    # LOCK 4: GARANTÍA
     # ========================================================
 
     try:
@@ -600,7 +616,7 @@ def aprobar_garantia(garantia_id, data, usuario):
     resolucion = data["resolucion"]
 
     # ========================================================
-    # LOCK 4: DETALLE DE VENTA
+    # LOCK 5: DETALLE DE VENTA
     # ========================================================
 
     try:

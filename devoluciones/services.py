@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP 
- 
+from dateutil.relativedelta import relativedelta
+
 from django.db import models, transaction
 from django.db.models import OuterRef, Subquery
 from django.utils import timezone 
@@ -94,8 +95,44 @@ def _validar_plazo(venta, tipo):
         raise BusinessException( 
             "El periodo de devolución expiró." 
         ) 
- 
- 
+def _validar_garantia(devolucion):
+    venta = devolucion.venta
+
+    detalles = list(
+        devolucion.detalles.select_related(
+            "detalle_venta__variante"
+        )
+    )
+
+    if not detalles:
+        raise BusinessException(
+            "La devolución no contiene productos."
+        )
+
+    ahora = timezone.now()
+
+    for detalle in detalles:
+        variante = detalle.detalle_venta.variante
+
+        if not variante.garantia_meses:
+            raise BusinessException(
+                "Este producto no tiene garantía configurada."
+            )
+
+        fecha_limite = (
+            venta.fecha
+            + relativedelta(
+                months=variante.garantia_meses
+            )
+        )
+
+        if ahora > fecha_limite:
+            raise BusinessException(
+                "La garantía de este producto venció el "
+                f"{fecha_limite.strftime('%d/%m/%Y')}."
+            )           
+
+
 def _calcular_factor_reembolso(venta): 
  
     subtotal_bruto = ( 
@@ -500,7 +537,14 @@ def crear_devolucion(
     _validar_plazo( 
         venta, 
         data["tipo"] 
-    ) 
+    )
+    
+    if data["tipo"] == "EXTRAORDINARIA":
+        if usuario.rol not in (0, 1):
+            raise BusinessException(
+                "Solo un administrador puede autorizar "
+                "devoluciones extraordinarias."
+            )
  
     # ======================================================== 
     # MÉTODO DE REEMBOLSO AUTOMÁTICO 
@@ -545,7 +589,9 @@ def crear_devolucion(
         venta, 
         data["productos"], 
         factor_reembolso 
-    ) 
+    )
+    if devolucion.tipo == "GARANTIA":
+        _validar_garantia(devolucion)
  
     devolucion.total_devuelto = ( 
         _calcular_total_devuelto( 
@@ -630,9 +676,32 @@ def actualizar_devolucion(
     # ACTUALIZAR CAMPOS 
     # ======================================================== 
  
-    if "tipo" in data: 
- 
-        devolucion.tipo = data["tipo"] 
+    if "tipo" in data:
+        nuevo_tipo = data["tipo"]
+        
+        if nuevo_tipo != devolucion.tipo:
+            if nuevo_tipo == "NORMAL":
+                venta = (
+                    Venta.objects
+                    .get(id=devolucion.venta_id)
+                )
+
+                _validar_plazo(
+                    venta,
+                    nuevo_tipo
+                )
+
+            elif nuevo_tipo == "GARANTIA":
+                _validar_garantia(devolucion)
+                
+            elif nuevo_tipo == "EXTRAORDINARIA":
+                if usuario.rol not in (0, 1):
+                    raise BusinessException(
+                        "Solo un administrador puede autorizar "
+                        "devoluciones extraordinarias."
+                    )
+
+            devolucion.tipo = nuevo_tipo
  
     if "motivo" in data: 
  
@@ -715,279 +784,285 @@ def _obtener_corte_efectivo(
 # ============================================================ 
 # APROBAR DEVOLUCIÓN 
 # ============================================================ 
- 
-@transaction.atomic 
-def aprobar_devolucion( 
-    devolucion_id, 
-    usuario 
-): 
- 
+
+# ============================================================
+# APROBAR DEVOLUCIÓN
+# ============================================================
+
+# ============================================================
+# APROBAR DEVOLUCIÓN
+# ============================================================
+
+@transaction.atomic
+def aprobar_devolucion(devolucion_id, usuario):
     # ========================================================
-    # LOCK 1: DEVOLUCIÓN
+    # LECTURAS PRELIMINARES SIN LOCK
     # ========================================================
 
     try:
-        devolucion = (
+        devolucion_base = (
             Devolucion.objects
-            .select_for_update()
+            .select_related("metodo_pago_reembolso")
             .get(id=devolucion_id)
         )
-
     except Devolucion.DoesNotExist:
         raise BusinessException(
             "La devolución no existe."
         )
- 
-    # ========================================================
-    # LOCK 2: VENTA
-    # ========================================================
 
     try:
-        venta = (
+        venta_base = (
             Venta.objects
-            .select_for_update()
             .select_related("corte_caja")
-            .get(id=devolucion.venta_id)
+            .get(id=devolucion_base.venta_id)
         )
-
     except Venta.DoesNotExist:
         raise BusinessException(
             "La venta asociada no existe."
         )
 
+    if not venta_base.corte_caja:
+        raise BusinessException(
+            "La venta no tiene un corte de caja asociado."
+        )
+
+    caja_id = venta_base.corte_caja.caja_id
+    corte_id = venta_base.corte_caja_id
+
+    metodo_pago_base = (
+        devolucion_base.metodo_pago_reembolso
+    )
+
+    # ========================================================
+    # LOCK 1: CAJA
+    # ========================================================
+
+    caja = (
+        Caja.objects
+        .select_for_update()
+        .get(id=caja_id)
+    )
+
+    # ========================================================
+    # LOCK 2: CORTE DE CAJA
+    # ========================================================
+
+    if (
+        metodo_pago_base
+        and metodo_pago_base.nombre == "EFECTIVO"
+    ):
+        # Para efectivo se utiliza el corte abierto
+        # de la caja actual.
+        corte = _obtener_corte_efectivo(caja)
+
+    else:
+        # Para reembolsos no monetarios se conserva
+        # el corte asociado a la venta, aunque sea histórico.
+        corte = (
+            CorteCaja.objects
+            .select_for_update()
+            .get(
+                id=corte_id,
+                caja_id=caja_id,
+            )
+        )
+
+    # ========================================================
+    # LOCK 3: VENTA
+    # ========================================================
+
+    venta = (
+        Venta.objects
+        .select_for_update()
+        .get(id=devolucion_base.venta_id)
+    )
 
     if not venta.corte_caja:
         raise BusinessException(
             "La venta no tiene un corte de caja asociado."
         )
 
-    caja_id = venta.corte_caja.caja_id
-    corte_id = venta.corte_caja_id
-    
-    
     # ========================================================
-    # LOCK 3: CAJA
+    # LOCK 4: DEVOLUCIÓN
     # ========================================================
 
-    try:
-        caja = (
-            Caja.objects
-            .select_for_update()
-            .get(id=caja_id)
+    devolucion = (
+        Devolucion.objects
+        .select_for_update()
+        .get(id=devolucion_id)
+    )
+
+    # ========================================================
+    # VALIDACIONES
+    # ========================================================
+
+    if devolucion.estado != "PENDIENTE":
+        raise BusinessException(
+            "Solo se pueden aprobar devoluciones pendientes."
         )
 
-    except Caja.DoesNotExist:
+    if venta.estado == "CANCELADA":
         raise BusinessException(
-            "La caja asociada a la venta no existe."
+            "No se puede aprobar una devolución de una venta cancelada."
         )
- 
-    # ======================================================== 
-    # VALIDACIONES 
-    # ======================================================== 
- 
-    if devolucion.estado != "PENDIENTE": 
-        raise BusinessException( 
-            "Solo se pueden aprobar devoluciones pendientes." 
-        ) 
- 
-    if venta.estado == "CANCELADA": 
-        raise BusinessException( 
-            "No se puede aprobar una devolución " 
-            "de una venta cancelada." 
-        ) 
- 
-    if venta.estado == "DEVUELTA": 
-        raise BusinessException( 
-            "La venta ya fue devuelta completamente." 
-        ) 
- 
-    if not devolucion.metodo_pago_reembolso: 
-        raise BusinessException( 
-            "La devolución no tiene un método de reembolso." 
-        ) 
- 
-    metodo_pago = devolucion.metodo_pago_reembolso 
-    
-    # LOCK 4: CORTE HISTÓRICO — SOLO NO EFECTIVO # =========
-    
-    corte = None
-    
-    if metodo_pago.nombre != "EFECTIVO":
-        
-        try:
-            corte =(
-                CorteCaja.objects
-                .select_for_update()
-                .get(id=corte_id,
-                     caja=caja      
-                )
-            )
-        except CorteCaja.DoesNotExist:
-            raise BusinessException(
-                "El corte de caja asociado a la venta no existe."
-            )
-        
- 
-    # ======================================================== 
-    # LOCK 5: DETALLES DE VENTA 
-    # ======================================================== 
-    # 
-    # Se bloquean los detalles involucrados antes de validar 
-    # cantidades para sincronizar devoluciones y garantías. 
-    # 
-    detalles_devolucion = list( 
-        devolucion.detalles.all() 
-    ) 
- 
-    if not detalles_devolucion: 
-        raise BusinessException( 
-            "La devolución no tiene productos." 
-        ) 
- 
-    detalle_venta_ids = sorted( 
-        { 
-            detalle.detalle_venta_id 
-            for detalle in detalles_devolucion 
-        }, 
-        key=str 
-    ) 
- 
-    detalles_venta = list( 
-        DetalleVenta.objects 
-        .select_for_update() 
-        .filter( 
-            id__in=detalle_venta_ids, 
-            venta=venta 
-        ) 
-        .order_by("id") 
-    ) 
- 
-    if len(detalles_venta) != len(detalle_venta_ids): 
-        raise BusinessException( 
-            "Uno o más productos de la devolución " 
-            "no pertenecen a la venta." 
-        ) 
- 
-    detalles_venta_map = { 
-        detalle.id: detalle 
-        for detalle in detalles_venta 
-    } 
- 
-    # Reasociamos cada detalle de devolución con el 
-    # DetailVenta ya bloqueado. 
-    for detalle in detalles_devolucion: 
-        detalle.detalle_venta = detalles_venta_map[ 
-            detalle.detalle_venta_id 
-        ] 
- 
-    # ======================================================== 
-    # VALIDAR CANTIDADES 
-    # ======================================================== 
- 
-    _validar_cantidades_aprobacion( 
-        detalles_devolucion, 
-        devolucion 
-    ) 
- 
-    # ======================================================== 
-    # DETERMINAR CORTE PARA EL REEMBOLSO 
-    # ======================================================== 
- 
-    if metodo_pago.nombre == "EFECTIVO": 
-        corte = _obtener_corte_efectivo( 
-            caja 
-        ) 
- 
-    # Para métodos no efectivos se conserva el corte de la 
-    # venta. El corte ya está bloqueado arriba para evitar 
-    # carreras con el cierre de caja. 
 
-    elif corte is None:
+    if venta.estado == "DEVUELTA":
         raise BusinessException(
-            "La venta no tiene un corte de caja asociado."
+            "La venta ya fue devuelta completamente."
         )
- 
-    # ======================================================== 
-    # LOCK 6: VARIANTES 
-    # ======================================================== 
-    # 
-    # _reponer_stock() adquiere los locks de las variantes. 
-    # Los detalles están ordenados por id, por lo que el 
-    # orden de adquisición queda determinístico. 
-    # 
-    # ======================================================== 
- 
-    _reponer_stock( 
-        detalles_devolucion, 
-        devolucion, 
-        usuario 
-    ) 
- 
-    # ======================================================== 
-    # MOVIMIENTO DE CAJA 
-    # ======================================================== 
- 
-    MovimientoCaja.objects.create( 
-        corte_caja=corte, 
-        metodo_pago=metodo_pago, 
-        tipo="REEMBOLSO", 
-        monto=devolucion.total_devuelto, 
-        devolucion=devolucion, 
-        observaciones=( 
-            f"Reembolso de devolución " 
-            f"{devolucion.id}" 
-        ), 
-        usuario=usuario, 
-    ) 
- 
-    # ======================================================== 
-    # ACTUALIZAR DEVOLUCIÓN 
-    # ======================================================== 
- 
-    devolucion.estado = "APROBADA" 
- 
-    devolucion.save( 
-        update_fields=[ 
-            "estado" 
-        ] 
-    ) 
- 
-    # ======================================================== 
-    # BITÁCORA 
-    # ======================================================== 
- 
-    registrar_bitacora( 
-        usuario=usuario, 
-        modulo="Devoluciones", 
-        accion="DEVOLUCION_APROBADA", 
-        descripcion=( 
-            f"Devolución '{devolucion.id}' " 
-            f"aprobada por " 
-            f"{usuario.nombre} " 
-            f"{usuario.apellido}. " 
-            f"Venta: '{venta.folio}'. " 
-            f"Total devuelto: " 
-            f"${devolucion.total_devuelto:.2f}. " 
-            f"Método de reembolso: " 
-            f"{metodo_pago.nombre}." 
-        ), 
-    ) 
- 
-    # ======================================================== 
-    # MARCAR VENTA COMO DEVUELTA 
-    # ======================================================== 
- 
-    if _venta_completamente_devuelta(venta): 
-        venta.estado = "DEVUELTA" 
- 
-        venta.save( 
-            update_fields=[ 
-                "estado" 
-            ] 
-        ) 
- 
-    return devolucion 
- 
+
+    if not devolucion.metodo_pago_reembolso:
+        raise BusinessException(
+            "La devolución no tiene un método de pago de reembolso."
+        )
+
+    metodo_pago = devolucion.metodo_pago_reembolso
+
+    # ========================================================
+    # VALIDAR QUE EL MÉTODO NO HAYA CAMBIADO DURANTE
+    # LAS LECTURAS PRELIMINARES
+    # ========================================================
+
+    metodo_pago_base_id = (
+        metodo_pago_base.id
+        if metodo_pago_base
+        else None
+    )
+
+    if metodo_pago.id != metodo_pago_base_id:
+        raise BusinessException(
+            "La devolución fue modificada durante el proceso. "
+            "Intenta nuevamente."
+        )
+
+    # ========================================================
+    # LOCK 5: DETALLES DE LA VENTA
+    # ========================================================
+
+    detalles = list(
+        devolucion.detalles.all()
+    )
+
+    if not detalles:
+        raise BusinessException(
+            "La devolución no contiene productos."
+        )
+
+    detalle_venta_ids = [
+        detalle.detalle_venta_id
+        for detalle in detalles
+    ]
+
+    detalles_venta = list(
+        DetalleVenta.objects
+        .select_for_update()
+        .filter(
+            id__in=detalle_venta_ids,
+            venta=venta,
+        )
+        .order_by("id")
+    )
+
+    detalles_venta_map = {
+        detalle.id: detalle
+        for detalle in detalles_venta
+    }
+
+    if (
+        len(detalles_venta_map)
+        != len(set(detalle_venta_ids))
+    ):
+        raise BusinessException(
+            "Uno o más detalles de la venta no existen."
+        )
+
+    # ========================================================
+    # VALIDAR CANTIDADES DISPONIBLES
+    # ========================================================
+
+    _validar_cantidades_aprobacion(
+        detalles,
+        devolucion,
+    )
+
+    # ========================================================
+    # REPONER STOCK
+    # ========================================================
+
+    _reponer_stock(
+        detalles,
+        devolucion,
+        usuario,
+    )
+
+    # ========================================================
+    # REEMBOLSO EN CAJA
+    # ========================================================
+
+    if metodo_pago.nombre == "EFECTIVO":
+        MovimientoCaja.objects.create(
+            caja=caja,
+            corte_caja=corte,
+            tipo="REEMBOLSO",
+            monto=devolucion.total_devuelto,
+            descripcion=(
+                f"Reembolso por devolución "
+                f"{devolucion.id}"
+            ),
+            usuario=usuario,
+        )
+
+    # ========================================================
+    # APROBAR DEVOLUCIÓN
+    # ========================================================
+
+    devolucion.estado = "APROBADA"
+    devolucion.aprobado_por = usuario
+    devolucion.fecha_aprobacion = timezone.now()
+
+    devolucion.save(
+        update_fields=[
+            "estado",
+            "aprobado_por",
+            "fecha_aprobacion",
+        ]
+    )
+
+    # ========================================================
+    # BITÁCORA
+    # ========================================================
+
+    registrar_bitacora(
+        usuario=usuario,
+        modulo="Devoluciones",
+        accion="DEVOLUCION_APROBADA",
+        descripcion=(
+            f"Devolución '{devolucion.id}' "
+            f"aprobada para la venta "
+            f"'{venta.folio}' por "
+            f"{usuario.nombre} "
+            f"{usuario.apellido}. "
+            f"Total devuelto: "
+            f"${devolucion.total_devuelto:.2f}. "
+            f"Método de reembolso: "
+            f"{metodo_pago.nombre}. "
+            f"Estado: APROBADA."
+        ),
+    )
+
+    # ========================================================
+    # ACTUALIZAR ESTADO DE LA VENTA
+    # ========================================================
+
+    if _venta_completamente_devuelta(venta):
+        venta.estado = "DEVUELTA"
+        venta.save(
+            update_fields=["estado"]
+        )
+
+    return devolucion
+
+
 # ============================================================ 
 # RECHAZAR DEVOLUCIÓN 
 # ============================================================ 
