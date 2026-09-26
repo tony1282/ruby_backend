@@ -411,77 +411,94 @@ def _validar_cantidades_aprobacion(detalles, devolucion):
                 "La cantidad devuelta supera " 
                 "la cantidad disponible." 
             ) 
+def _reponer_stock(
+    detalles,
+    devolucion,
+    usuario
+):
+
+    variante_ids = sorted(
+        {
+            detalle.detalle_venta.variante_id
+            for detalle in detalles
+        },
+        key=str,
+    )
+
+    variantes = (
+        Variante.objects
+        .select_for_update()
+        .filter(id__in=variante_ids)
+        .order_by("id")
+    )
+
+    variantes_map = {
+        variante.id: variante
+        for variante in variantes
+    }
+
+    if len(variantes_map) != len(variante_ids):
+        raise BusinessException(
+            "Una o más variantes de la devolución no existen."
+        )
+
+    for detalle in sorted(
+        detalles,
+        key=lambda d: str(d.detalle_venta.variante_id),
+    ):
+        variante = variantes_map[
+            detalle.detalle_venta.variante_id
+        ]
+
+        stock_ant = variante.stock
+        stock_def_ant = variante.stock_defectuoso
+
+        if devolucion.tipo == "DEFECTUOSO":
+
+            stock_nuevo = stock_ant
+
+            stock_def_nuevo = (
+                stock_def_ant
+                + detalle.cantidad
+            )
+
+        else:
+
+            stock_nuevo = (
+                stock_ant
+                + detalle.cantidad
+            )
+
+            stock_def_nuevo = stock_def_ant
+
+        MovimientoInventario.objects.create(
+            variante=variante,
+            tipo="DEVOLUCION",
+            stock_anterior=stock_ant,
+            cantidad=detalle.cantidad,
+            stock_nuevo=stock_nuevo,
+            stock_defectuoso_anterior=stock_def_ant,
+            stock_defectuoso_nuevo=stock_def_nuevo,
+            observaciones=(
+                f"Devolución {devolucion.id}"
+            ),
+            usuario=usuario,
+        )
+
+        variante.stock = stock_nuevo
+        variante.stock_defectuoso = stock_def_nuevo
+
+        variante.save(
+            update_fields=[
+                "stock",
+                "stock_defectuoso",
+                "fecha_actualizacion",
+            ]
+        )
+         
  
-    
-def _reponer_stock( 
-    detalles, 
-    devolucion, 
-    usuario 
-): 
  
-    for detalle in sorted( 
-        detalles, 
-        key=lambda detalle: str( 
-            detalle.detalle_venta_id 
-            ) 
-    ): 
- 
- 
-        variante = ( 
-            Variante.objects 
-            .select_for_update() 
-            .get( 
-                id=detalle.detalle_venta.variante_id 
-            ) 
-        ) 
- 
-        stock_ant = variante.stock 
-        stock_def_ant = variante.stock_defectuoso 
- 
-        if devolucion.tipo == "DEFECTUOSO": 
- 
-            stock_nuevo = stock_ant 
- 
-            stock_def_nuevo = ( 
-                stock_def_ant 
-                + detalle.cantidad 
-            ) 
- 
-        else: 
- 
-            stock_nuevo = ( 
-                stock_ant 
-                + detalle.cantidad 
-            ) 
- 
-            stock_def_nuevo = stock_def_ant 
- 
-        MovimientoInventario.objects.create( 
-            variante=variante, 
-            tipo="DEVOLUCION", 
-            stock_anterior=stock_ant, 
-            cantidad=detalle.cantidad, 
-            stock_nuevo=stock_nuevo, 
-            stock_defectuoso_anterior=stock_def_ant, 
-            stock_defectuoso_nuevo=stock_def_nuevo, 
-            observaciones=( 
-                f"Devolución {devolucion.id}" 
-            ), 
-            usuario=usuario, 
-        ) 
- 
-        variante.stock = stock_nuevo 
-        variante.stock_defectuoso = stock_def_nuevo 
- 
-        variante.save( 
-            update_fields=[ 
-                "stock", 
-                "stock_defectuoso", 
-                "fecha_actualizacion" 
-            ] 
-        ) 
- 
- 
+        
 def _venta_completamente_devuelta(venta):
     cantidades_devueltas = (
         DetalleDevolucion.objects
@@ -1001,20 +1018,17 @@ def aprobar_devolucion(devolucion_id, usuario):
 
     if metodo_pago.nombre == "EFECTIVO":
         MovimientoCaja.objects.create(
-            caja=caja,
             corte_caja=corte,
+            metodo_pago=metodo_pago,
             tipo="REEMBOLSO",
             monto=devolucion.total_devuelto,
-            descripcion=(
+            devolucion=devolucion,
+            observaciones=(
                 f"Reembolso por devolución "
                 f"{devolucion.id}"
             ),
             usuario=usuario,
         )
-
-    # ========================================================
-    # APROBAR DEVOLUCIÓN
-    # ========================================================
 
     devolucion.estado = "APROBADA"
     devolucion.aprobado_por = usuario
