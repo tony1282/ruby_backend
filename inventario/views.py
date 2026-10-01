@@ -3,6 +3,7 @@ import uuid
 from rest_framework.pagination import PageNumberPagination
 
 from django.db.models import F, Q
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets, mixins, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -60,6 +61,12 @@ class MovimientoInventarioViewSet(
             "variante_id"
         )
         search = self.request.query_params.get("search")
+        fecha_desde_raw = self.request.query_params.get(
+            "fecha_desde"
+        )
+        fecha_hasta_raw = self.request.query_params.get(
+            "fecha_hasta"
+        )
 
         # ------------------------------------------------------
         # VALIDAR TIPO
@@ -157,6 +164,65 @@ class MovimientoInventarioViewSet(
                         variante__codigo_barras__icontains=search
                     )
                 )
+
+        # ------------------------------------------------------
+        # VALIDAR FECHAS
+        # ------------------------------------------------------
+
+        fecha_desde = (
+            parse_date(fecha_desde_raw)
+            if fecha_desde_raw
+            else None
+        )
+
+        fecha_hasta = (
+            parse_date(fecha_hasta_raw)
+            if fecha_hasta_raw
+            else None
+        )
+
+        if (
+            fecha_desde_raw
+            and fecha_desde is None
+        ):
+
+            raise BusinessException(
+                "La fecha inicial debe tener "
+                "formato YYYY-MM-DD."
+            )
+
+        if (
+            fecha_hasta_raw
+            and fecha_hasta is None
+        ):
+
+            raise BusinessException(
+                "La fecha final debe tener "
+                "formato YYYY-MM-DD."
+            )
+
+        if (
+            fecha_desde
+            and fecha_hasta
+            and fecha_desde > fecha_hasta
+        ):
+
+            raise BusinessException(
+                "La fecha final no puede ser "
+                "anterior a la fecha inicial."
+            )
+
+        if fecha_desde:
+
+            queryset = queryset.filter(
+                fecha__date__gte=fecha_desde
+            )
+
+        if fecha_hasta:
+
+            queryset = queryset.filter(
+                fecha__date__lte=fecha_hasta
+            )
 
         return queryset
 
