@@ -37,21 +37,33 @@ if not SECRET_KEY:
 DEBUG = os.getenv("DEBUG") == "True"
 
 ALLOWED_HOSTS = [
-    "localhost",
-    "127.0.0.1",
-    "improvement-intersection-ooo-extension.trycloudflare.com",
+    host.strip()
+    for host in os.getenv(
+        "ALLOWED_HOSTS",
+        "localhost,127.0.0.1"
+    ).split(",")
+    if host.strip()
+]
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173"
+    ).split(",")
+    if origin.strip()
 ]
 
     
 CSRF_TRUSTED_ORIGINS = [
-    "https://improvement-intersection-ooo-extension.trycloudflare.com",
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
 ]
 
 # En producción cambiar a False y listar solo los orígenes permitidos.
 # Ejemplo: CORS_ALLOWED_ORIGINS = ["https://tu-frontend.com"]
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-]
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 
 # Application definition
