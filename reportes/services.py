@@ -209,67 +209,69 @@ def _metodos_dict(
             ),
     }
 
+def reporte_resumen_dia(
+    fecha=None,
+    usuario_id=None,
+):
 
-def reporte_resumen_dia( 
-    fecha=None, 
-    usuario_id=None, 
-): 
- 
-    if fecha is None: 
+    if fecha is None:
         fecha = timezone.localdate()
 
-    inicio = timezone.make_aware( 
-        datetime.combine( 
-            fecha, 
-            time.min, 
-        ) 
-    ) 
+    inicio = timezone.make_aware(
+        datetime.combine(
+            fecha,
+            time.min,
+        )
+    )
 
     fin_exclusivo = inicio + timedelta(days=1)
 
-    ventas = Venta.objects.filter( 
-        fecha__gte=inicio,
-        fecha__lt=fin_exclusivo,
-        estado__in=[ 
-            "COMPLETADA", 
-            "DEVUELTA", 
-        ], 
-    ) 
- 
-    if usuario_id: 
-        ventas = ventas.filter( 
-            usuario_id=usuario_id 
-        )
-
-    resumen = ventas.aggregate( 
-        cantidad_ventas=Count("id"), 
-        subtotal=Sum("subtotal"), 
-        descuento=Sum("descuento"), 
-        iva=Sum("iva"), 
-        total=Sum("total"), 
-    ) 
- 
-    total_vendido = dinero( 
-        resumen["total"] 
-    )
-
-    reembolsos_qs = ( 
-        MovimientoCaja.objects.filter( 
+    if usuario_id:
+        ventas = Venta.objects.filter(
             fecha__gte=inicio,
             fecha__lt=fin_exclusivo,
-            tipo="REEMBOLSO", 
-        ) 
-    ) 
- 
-    if usuario_id: 
-        reembolsos_qs = reembolsos_qs.filter( 
-            usuario_id=usuario_id 
+            estado="COMPLETADA",
+            usuario_id=usuario_id,
+        )
+    else:
+        ventas = Venta.objects.filter(
+            fecha__gte=inicio,
+            fecha__lt=fin_exclusivo,
+            estado__in=[
+                "COMPLETADA",
+                "DEVUELTA",
+            ],
         )
 
-    reembolsos = dinero( 
-        reembolsos_qs.aggregate( 
-            total=Sum("monto") 
-        )["total"] 
+    resumen = ventas.aggregate(
+        cantidad_ventas=Count("id"),
+        subtotal=Sum("subtotal"),
+        descuento=Sum("descuento"),
+        iva=Sum("iva"),
+        total=Sum("total"),
+    )
+
+    total_vendido = dinero(
+        resumen["total"]
+    )
+
+    reembolsos_qs = (
+        MovimientoCaja.objects.filter(
+            fecha__gte=inicio,
+            fecha__lt=fin_exclusivo,
+            tipo="REEMBOLSO",
+        )
+    )
+
+    if usuario_id:
+        reembolsos_qs = reembolsos_qs.filter(
+            usuario_id=usuario_id
+        )
+
+    reembolsos = dinero(
+        reembolsos_qs.aggregate(
+            total=Sum("monto")
+        )["total"]
     )
 
     return {

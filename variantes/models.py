@@ -21,7 +21,9 @@ class Variante(models.Model):
 
     codigo_barras = models.CharField(
         max_length=100,
-        unique=True
+        unique=True,
+        null=True,
+        blank=True,
     )
 
     sku = models.CharField(

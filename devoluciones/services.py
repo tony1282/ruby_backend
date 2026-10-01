@@ -1031,14 +1031,10 @@ def aprobar_devolucion(devolucion_id, usuario):
         )
 
     devolucion.estado = "APROBADA"
-    devolucion.aprobado_por = usuario
-    devolucion.fecha_aprobacion = timezone.now()
 
     devolucion.save(
         update_fields=[
             "estado",
-            "aprobado_por",
-            "fecha_aprobacion",
         ]
     )
 
