@@ -1,4 +1,5 @@
 import uuid
+from typing import NamedTuple
 
 from django.db import transaction
 
@@ -7,6 +8,23 @@ from bitacora.services import registrar_bitacora
 from config.exceptions import BusinessException
 
 from .models import MovimientoInventario
+
+
+class ResultadoMovimiento(NamedTuple):
+    movimiento: object
+    stock_anterior: int
+    stock_nuevo: int
+    stock_defectuoso_anterior: int
+    stock_defectuoso_nuevo: int
+
+
+class ResultadoAjuste(NamedTuple):
+    movimiento: object
+    stock_anterior: int
+    stock_nuevo: int
+    stock_defectuoso_anterior: int
+    stock_defectuoso_nuevo: int
+    tipo_ajuste: str
 
 
 # ==============================================================
@@ -230,12 +248,12 @@ def registrar_entrada(variante_id, cantidad, observaciones, usuario):
         ),
     )
 
-    return (
-        movimiento,
-        stock_anterior,
-        stock_nuevo,
-        stock_defectuoso_anterior,
-        stock_defectuoso_nuevo,
+    return ResultadoMovimiento(
+        movimiento=movimiento,
+        stock_anterior=stock_anterior,
+        stock_nuevo=stock_nuevo,
+        stock_defectuoso_anterior=stock_defectuoso_anterior,
+        stock_defectuoso_nuevo=stock_defectuoso_nuevo,
     )
 
 
@@ -307,12 +325,12 @@ def registrar_salida(variante_id, cantidad, observaciones, usuario):
         ),
     )
 
-    return (
-        movimiento,
-        stock_anterior,
-        stock_nuevo,
-        stock_defectuoso_anterior,
-        stock_defectuoso_nuevo,
+    return ResultadoMovimiento(
+        movimiento=movimiento,
+        stock_anterior=stock_anterior,
+        stock_nuevo=stock_nuevo,
+        stock_defectuoso_anterior=stock_defectuoso_anterior,
+        stock_defectuoso_nuevo=stock_defectuoso_nuevo,
     )
 
 
@@ -404,11 +422,11 @@ def registrar_ajuste(
         ),
     )
 
-    return (
-        movimiento,
-        stock_anterior,
-        stock_nuevo_solicitado,
-        stock_defectuoso_anterior,
-        stock_defectuoso_nuevo,
-        tipo_ajuste,
+    return ResultadoAjuste(
+        movimiento=movimiento,
+        stock_anterior=stock_anterior,
+        stock_nuevo=stock_nuevo_solicitado,
+        stock_defectuoso_anterior=stock_defectuoso_anterior,
+        stock_defectuoso_nuevo=stock_defectuoso_nuevo,
+        tipo_ajuste=tipo_ajuste,
     )
