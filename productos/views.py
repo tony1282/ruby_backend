@@ -1,4 +1,5 @@
 from django.db import IntegrityError
+from django.db.models import Q
 
 from rest_framework import (
     viewsets,
@@ -112,6 +113,14 @@ class ProductoViewSet(
                 .select_related("categoria")
             )
 
+        search = (
+            self.request.query_params.get(
+                "search",
+                "",
+            )
+            .strip()
+        )
+
         if (
             self.action == "list"
             and es_admin
@@ -127,34 +136,46 @@ class ProductoViewSet(
 
                 if activo_param.lower() == "todos":
 
-                    return (
-                        Producto.objects
-                        .all()
-                        .select_related("categoria")
-                        .order_by(
-                            "nombre",
-                            "id",
-                        )
-                    )
+                    queryset = Producto.objects.all()
 
-                return (
-                    Producto.objects
-                    .filter(
+                else:
+
+                    queryset = Producto.objects.filter(
                         activo=(
                             activo_param.lower()
                             in ("true", "1")
                         )
                     )
-                    .select_related("categoria")
-                    .order_by(
-                        "nombre",
-                        "id",
-                    )
+
+            else:
+
+                queryset = Producto.objects.filter(
+                    activo=True
                 )
 
+        else:
+
+            queryset = Producto.objects.filter(
+                activo=True
+            )
+
+        if (
+            self.action == "list"
+            and search
+        ):
+
+            queryset = queryset.filter(
+                Q(nombre__icontains=search)
+                | Q(categoria__nombre__icontains=search)
+                | Q(variantes__nombre__icontains=search)
+                | Q(variantes__sku__icontains=search)
+                | Q(
+                    variantes__codigo_barras__icontains=search
+                )
+            ).distinct()
+
         return (
-            Producto.objects
-            .filter(activo=True)
+            queryset
             .select_related("categoria")
             .order_by(
                 "nombre",
