@@ -1,9 +1,21 @@
 import concurrent.futures
+import os
+
 import requests
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 URL = "http://127.0.0.1:8000/api/ventas/"
 
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzg4OTMxNDEwLCJpYXQiOjE3ODg5Mjc4MTAsImp0aSI6ImNmMzE5NGJhMTY3OTQ4MjA5YTJiOGFiMjQ4ZWE4ZDVkIiwidXNlcl9pZCI6ImZhNjhkZjFjLWUyZGYtNDE3ZC04YWE1LTM5MWU1NmNhMTQwMyJ9.ptymxuDjzjGwgGwyraA5QMmFB6pxYOoFviz-bG6pgyU"
+TOKEN = os.getenv("PRUEBA_FOLIOS_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "PRUEBA_FOLIOS_TOKEN no está configurado. "
+        "Define esta variable de entorno antes de ejecutar el script."
+    )
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
