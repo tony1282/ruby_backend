@@ -1,7 +1,7 @@
 import uuid
 
 from django.db import IntegrityError
-from django.db.models import F
+from django.db.models import F, Q
 
 from rest_framework import (
     viewsets,
@@ -116,6 +116,14 @@ class VarianteViewSet(
             )
         )
 
+        search = (
+            self.request.query_params.get(
+                "search",
+                "",
+            )
+            .strip()
+        )
+
         if producto_id:
 
             try:
@@ -210,6 +218,19 @@ class VarianteViewSet(
                         producto_id=producto_id
                     )
 
+                if search:
+
+                    queryset = queryset.filter(
+                        Q(
+                            producto__nombre__icontains=search
+                        )
+                        | Q(nombre__icontains=search)
+                        | Q(sku__icontains=search)
+                        | Q(
+                            codigo_barras__icontains=search
+                        )
+                    )
+
                 return (
                     queryset
                     .select_related(
@@ -235,6 +256,22 @@ class VarianteViewSet(
 
             queryset = queryset.filter(
                 producto_id=producto_id
+            )
+
+        if (
+            self.action == "list"
+            and search
+        ):
+
+            queryset = queryset.filter(
+                Q(
+                    producto__nombre__icontains=search
+                )
+                | Q(nombre__icontains=search)
+                | Q(sku__icontains=search)
+                | Q(
+                    codigo_barras__icontains=search
+                )
             )
 
         return (
