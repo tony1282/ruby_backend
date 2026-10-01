@@ -61,10 +61,6 @@ CSRF_TRUSTED_ORIGINS = [
     if origin.strip()
 ]
 
-# En producción cambiar a False y listar solo los orígenes permitidos.
-# Ejemplo: CORS_ALLOWED_ORIGINS = ["https://tu-frontend.com"]
-CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
-
 
 # Application definition
 
