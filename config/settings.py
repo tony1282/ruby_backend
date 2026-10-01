@@ -39,12 +39,12 @@ DEBUG = os.getenv("DEBUG") == "True"
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    "paper-initiated-empire-urban.trycloudflare.com",
+    "improvement-intersection-ooo-extension.trycloudflare.com",
 ]
 
     
 CSRF_TRUSTED_ORIGINS = [
-    "https://paper-initiated-empire-urban.trycloudflare.com",
+    "https://improvement-intersection-ooo-extension.trycloudflare.com",
 ]
 
 # En producción cambiar a False y listar solo los orígenes permitidos.

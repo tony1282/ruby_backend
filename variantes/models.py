@@ -93,10 +93,6 @@ class Variante(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["producto", "nombre"],
-                name="variante_producto_nombre_unico",
-            ),
-            models.UniqueConstraint(
                 Lower("sku"),
                 name="variante_sku_lower_unico",
             ),

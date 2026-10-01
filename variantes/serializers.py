@@ -15,6 +15,11 @@ class VarianteSerializer(serializers.ModelSerializer):
     # segunda barrera.
     # ----------------------------------------------------------
 
+    producto_nombre = serializers.CharField(
+        source="producto.nombre",
+        read_only=True,
+    )
+    
     sku = serializers.CharField(
         max_length=100,
         validators=[],
@@ -23,6 +28,9 @@ class VarianteSerializer(serializers.ModelSerializer):
     codigo_barras = serializers.CharField(
         max_length=100,
         validators=[],
+        required=False,
+        allow_null=True,
+        allow_blank=True,
     )
 
     stock = serializers.IntegerField(
@@ -58,6 +66,7 @@ class VarianteSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "producto",
+            "producto_nombre",
             "codigo_barras",
             "sku",
             "nombre",
@@ -147,12 +156,13 @@ class VarianteSerializer(serializers.ModelSerializer):
     # ==========================================================
 
     def validate_codigo_barras(self, value):
+        if value is None:
+            return None
+
         value = value.strip()
 
         if not value:
-            raise serializers.ValidationError(
-                "El código de barras es obligatorio."
-            )
+            return None
 
         if not value.isdigit():
             raise serializers.ValidationError(
