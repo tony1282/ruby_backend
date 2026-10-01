@@ -1,10 +1,14 @@
 import logging
 
+from django.db.models import Q
+from django.utils.dateparse import parse_date
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.exceptions import ValidationError
 
 from usuarios.permissions import IsAdmin
 from config.exceptions import BusinessException
@@ -32,6 +36,8 @@ from .services import (
 class GarantiaPagination(PageNumberPagination):
 
     page_size = 50
+
+    page_size_query_param = "page_size"
 
     max_page_size = 200
 
@@ -63,6 +69,141 @@ class GarantiaListCreateView(APIView):
                 "variante_nueva"
             ).filter(
                 usuario=request.user
+            )
+
+        search = request.query_params.get(
+            "search",
+            "",
+        ).strip()
+
+        estado = request.query_params.get(
+            "estado",
+            "",
+        ).strip().upper()
+
+        fecha_desde_raw = request.query_params.get(
+            "fecha_desde"
+        )
+
+        fecha_hasta_raw = request.query_params.get(
+            "fecha_hasta"
+        )
+
+        if len(search) > 100:
+
+            raise ValidationError({
+                "search": (
+                    "El texto de búsqueda no puede "
+                    "superar los 100 caracteres."
+                )
+            })
+
+        if search:
+
+            garantias = garantias.filter(
+                Q(
+                    venta__folio__icontains=search
+                )
+                | Q(
+                    variante__producto__nombre__icontains=search
+                )
+                | Q(
+                    variante__nombre__icontains=search
+                )
+                | Q(
+                    variante__sku__icontains=search
+                )
+                | Q(
+                    variante__codigo_barras__icontains=search
+                )
+                | Q(motivo__icontains=search)
+                | Q(usuario__nombre__icontains=search)
+                | Q(usuario__apellido__icontains=search)
+            ).distinct()
+
+        if (
+            estado
+            and estado != "TODOS"
+        ):
+
+            estados_validos = {
+                valor
+                for valor, _
+                in Garantia.ESTADO_CHOICES
+            }
+
+            if estado not in estados_validos:
+
+                raise ValidationError({
+                    "estado": (
+                        "El estado de garantía "
+                        "no es válido."
+                    )
+                })
+
+            garantias = garantias.filter(
+                estado=estado
+            )
+
+        fecha_desde = (
+            parse_date(fecha_desde_raw)
+            if fecha_desde_raw
+            else None
+        )
+
+        fecha_hasta = (
+            parse_date(fecha_hasta_raw)
+            if fecha_hasta_raw
+            else None
+        )
+
+        if (
+            fecha_desde_raw
+            and fecha_desde is None
+        ):
+
+            raise ValidationError({
+                "fecha_desde": (
+                    "La fecha debe tener formato "
+                    "YYYY-MM-DD."
+                )
+            })
+
+        if (
+            fecha_hasta_raw
+            and fecha_hasta is None
+        ):
+
+            raise ValidationError({
+                "fecha_hasta": (
+                    "La fecha debe tener formato "
+                    "YYYY-MM-DD."
+                )
+            })
+
+        if (
+            fecha_desde
+            and fecha_hasta
+            and fecha_desde > fecha_hasta
+        ):
+
+            raise ValidationError({
+                "fecha_hasta": (
+                    "La fecha final no puede ser "
+                    "anterior a la fecha inicial."
+                )
+            })
+
+        if fecha_desde:
+
+            garantias = garantias.filter(
+                fecha__date__gte=fecha_desde
+            )
+
+        if fecha_hasta:
+
+            garantias = garantias.filter(
+                fecha__date__lte=fecha_hasta
             )
 
         paginator = GarantiaPagination()
