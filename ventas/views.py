@@ -1,6 +1,7 @@
 import logging
 
-from django.db.models import Prefetch, Sum, IntegerField, Value
+from django.db.models import Prefetch, Sum, IntegerField, Value, Q
+from django.utils.dateparse import parse_date
 from django.db.models.functions import Coalesce
 
 from rest_framework import mixins, viewsets, status
@@ -8,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.exceptions import ValidationError
 
 from .models import Venta
 from .serializers import VentaSerializer
@@ -375,6 +377,95 @@ class VentaViewSet(
 
             ventas = ventas.filter(
                 usuario=request.user
+            )
+
+        search = request.query_params.get(
+            "search",
+            "",
+        ).strip()
+
+        fecha_desde_raw = request.query_params.get(
+            "fecha_desde"
+        )
+
+        fecha_hasta_raw = request.query_params.get(
+            "fecha_hasta"
+        )
+
+        if search:
+
+            ventas = ventas.filter(
+                Q(folio__icontains=search)
+                | Q(usuario__nombre__icontains=search)
+                | Q(usuario__apellido__icontains=search)
+                | Q(usuario__usuario__icontains=search)
+                | Q(
+                    metodo_pago__nombre__icontains=search
+                )
+                | Q(
+                    corte_caja__caja__nombre__icontains=search
+                )
+            )
+
+        fecha_desde = (
+            parse_date(fecha_desde_raw)
+            if fecha_desde_raw
+            else None
+        )
+
+        fecha_hasta = (
+            parse_date(fecha_hasta_raw)
+            if fecha_hasta_raw
+            else None
+        )
+
+        if (
+            fecha_desde_raw
+            and fecha_desde is None
+        ):
+
+            raise ValidationError({
+                "fecha_desde": (
+                    "La fecha debe tener formato "
+                    "YYYY-MM-DD."
+                )
+            })
+
+        if (
+            fecha_hasta_raw
+            and fecha_hasta is None
+        ):
+
+            raise ValidationError({
+                "fecha_hasta": (
+                    "La fecha debe tener formato "
+                    "YYYY-MM-DD."
+                )
+            })
+
+        if (
+            fecha_desde
+            and fecha_hasta
+            and fecha_desde > fecha_hasta
+        ):
+
+            raise ValidationError({
+                "fecha_hasta": (
+                    "La fecha final no puede ser "
+                    "anterior a la fecha inicial."
+                )
+            })
+
+        if fecha_desde:
+
+            ventas = ventas.filter(
+                fecha__date__gte=fecha_desde
+            )
+
+        if fecha_hasta:
+
+            ventas = ventas.filter(
+                fecha__date__lte=fecha_hasta
             )
 
         paginator = VentaPagination()
